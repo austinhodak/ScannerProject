@@ -27,5 +27,22 @@
     "op25_web_host": "127.0.0.1",
     "op25_auto_restart": true,
     "op25_auto_start": false,
-    "op25_args": []
+    "op25_args": [
+        "--args",
+        "rtl",
+        "-N",
+        "LNA:47",
+        "-S",
+        "2400000",
+        "-T",
+        "trunk.tsv",
+        "-V",
+        "-2",
+        "-U",
+        "-w",
+        "-l",
+        "http:0.0.0.0:8080",
+        "-O",
+        "pulse"
+    ]
 }

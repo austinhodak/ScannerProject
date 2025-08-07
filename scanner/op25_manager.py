@@ -126,31 +126,32 @@ class OP25Manager:
         """Build OP25 command line"""
         cmd = ["python3", "rx.py"]
         
-        # Basic arguments
-        cmd.extend([
-            "--args", self.gain,
-            "--freq-corr", str(self.freq_error),
-            "--fine-tune", str(self.fine_tune),
-            "-v", str(self.log_level),
-            "-2",  # Phase 2 mode
-            "-T", "trunk.tsv",  # Trunk configuration file
-            "-w",  # Enable web interface
-            "-W", f"{self.web_host}",  # Web host
-            "-P", f"{self.web_port}",  # Web port
-        ])
-        
-        # Add configuration file if it exists
-        config_path = Path(config_file)
-        if config_path.exists():
-            cmd.extend(["-c", str(config_path)])
-        elif (Path(self.op25_path) / config_file).exists():
-            cmd.extend(["-c", str(Path(self.op25_path) / config_file)])
-        else:
-            logging.warning(f"Configuration file not found: {config_file}")
-            
-        # Add any additional arguments from settings
+        # Use custom arguments from settings if provided, otherwise use defaults
         if self.args:
+            # Use the custom arguments from settings.json
             cmd.extend(self.args)
+        else:
+            # Fallback to default arguments if no custom ones are specified
+            cmd.extend([
+                "--args", self.gain,
+                "--freq-corr", str(self.freq_error),
+                "--fine-tune", str(self.fine_tune),
+                "-v", str(self.log_level),
+                "-2",  # Phase 2 mode
+                "-T", "trunk.tsv",  # Trunk configuration file
+                "-w",  # Enable web interface
+                "-W", f"{self.web_host}",  # Web host
+                "-P", f"{self.web_port}",  # Web port
+            ])
+            
+            # Add configuration file if it exists (only for default mode)
+            config_path = Path(config_file)
+            if config_path.exists():
+                cmd.extend(["-c", str(config_path)])
+            elif (Path(self.op25_path) / config_file).exists():
+                cmd.extend(["-c", str(Path(self.op25_path) / config_file)])
+            else:
+                logging.warning(f"Configuration file not found: {config_file}")
             
         return cmd
         
