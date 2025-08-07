@@ -1,0 +1,15 @@
+TGID	Department	Description	Priority
+1	Police	Police Dispatch	High
+2	Fire	Fire Dispatch	High
+3	EMS	Emergency Medical	High
+4	Public Works	Public Works	Medium
+5	Transit	Public Transit	Low
+6	Parks	Parks & Recreation	Low
+7	Utilities	Water/Electric	Medium
+8	Sheriff	County Sheriff	High
+9	State Police	State Police	High
+10	Emergency Mgmt	Emergency Management	High
+100	Tactical 1	Police Tactical	High
+101	Tactical 2	Fire Tactical	High
+200	Maintenance	System Maintenance	Low
+999	Test	Test Channel	Low

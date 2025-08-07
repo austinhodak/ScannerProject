@@ -1,0 +1,28 @@
+{
+    "channels": {
+        "control_channel": {
+            "frequency": 460025000,
+            "bandwidth": 12500,
+            "center_frequency": 460000000
+        }
+    },
+    "trunking": {
+        "system_name": "Local System",
+        "nac": 659,
+        "sysid": 659,
+        "wacn": 48193
+    },
+    "audio": {
+        "sample_rate": 8000,
+        "output_device": "default"
+    },
+    "logging": {
+        "level": 1,
+        "file": "/tmp/op25.log"
+    },
+    "web": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 8080
+    }
+}

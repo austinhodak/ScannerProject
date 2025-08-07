@@ -1,0 +1,359 @@
+# --- op25_manager.py ---
+import subprocess
+import psutil
+import time
+import logging
+import signal
+import os
+from pathlib import Path
+from threading import Thread, Event
+
+
+class OP25Manager:
+    def __init__(self, settings):
+        self.settings = settings
+        self.process = None
+        self.monitoring_thread = None
+        self.stop_event = Event()
+        self.restart_count = 0
+        self.max_restarts = 5
+        self.last_restart_time = 0
+        self.restart_cooldown = 30  # 30 seconds between restarts
+        
+        # OP25 configuration
+        self.op25_path = self.settings.get("op25_path", "/opt/op25/op25/gr-op25_repeater/apps")
+        self.config_file = self.settings.get("op25_config", "scanner.json")
+        self.log_level = self.settings.get("op25_log_level", 1)
+        self.freq_error = self.settings.get("op25_freq_error", 0)
+        self.fine_tune = self.settings.get("op25_fine_tune", 0.0)
+        self.gain = self.settings.get("op25_gain", "auto")
+        self.args = self.settings.get("op25_args", [])
+        
+        # Web interface settings
+        self.web_port = self.settings.get("op25_web_port", 8080)
+        self.web_host = self.settings.get("op25_web_host", "127.0.0.1")
+        
+    def is_running(self):
+        """Check if OP25 process is running"""
+        if self.process and self.process.poll() is None:
+            return True
+        return self._find_op25_process() is not None
+        
+    def _find_op25_process(self):
+        """Find existing OP25 process by name"""
+        try:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                if proc.info['name'] and 'rx.py' in proc.info['name']:
+                    return proc
+                if proc.info['cmdline']:
+                    cmdline = ' '.join(proc.info['cmdline'])
+                    if 'rx.py' in cmdline or 'op25' in cmdline.lower():
+                        return proc
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        return None
+        
+    def get_status(self):
+        """Get detailed status of OP25 process"""
+        proc = self._find_op25_process()
+        if proc:
+            try:
+                return {
+                    "running": True,
+                    "pid": proc.pid,
+                    "cpu_percent": proc.cpu_percent(),
+                    "memory_mb": proc.memory_info().rss / 1024 / 1024,
+                    "status": proc.status(),
+                    "create_time": proc.create_time(),
+                    "restart_count": self.restart_count
+                }
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        
+        return {
+            "running": False,
+            "pid": None,
+            "restart_count": self.restart_count
+        }
+        
+    def start(self, config_file=None):
+        """Start OP25 process"""
+        if self.is_running():
+            logging.info("OP25 is already running")
+            return True
+            
+        try:
+            config_file = config_file or self.config_file
+            
+            # Build command line arguments
+            cmd = self._build_command(config_file)
+            
+            logging.info(f"Starting OP25 with command: {' '.join(cmd)}")
+            
+            # Set working directory to OP25 apps directory
+            cwd = self.op25_path if os.path.exists(self.op25_path) else None
+            
+            # Start process with proper environment
+            env = os.environ.copy()
+            env['PYTHONPATH'] = self.op25_path + ':' + env.get('PYTHONPATH', '')
+            
+            self.process = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                preexec_fn=os.setsid  # Create new process group
+            )
+            
+            # Wait a moment to see if process starts successfully
+            time.sleep(2)
+            
+            if self.process.poll() is None:
+                logging.info(f"OP25 started successfully with PID {self.process.pid}")
+                self._start_monitoring()
+                return True
+            else:
+                stdout, stderr = self.process.communicate()
+                logging.error(f"OP25 failed to start: {stderr.decode()}")
+                return False
+                
+        except Exception as e:
+            logging.error(f"Error starting OP25: {e}")
+            return False
+            
+    def _build_command(self, config_file):
+        """Build OP25 command line"""
+        cmd = ["python3", "rx.py"]
+        
+        # Basic arguments
+        cmd.extend([
+            "--args", self.gain,
+            "--freq-corr", str(self.freq_error),
+            "--fine-tune", str(self.fine_tune),
+            "-v", str(self.log_level),
+            "-2",  # Phase 2 mode
+            "-T", "trunk.tsv",  # Trunk configuration file
+            "-w",  # Enable web interface
+            "-W", f"{self.web_host}",  # Web host
+            "-P", f"{self.web_port}",  # Web port
+        ])
+        
+        # Add configuration file if it exists
+        config_path = Path(config_file)
+        if config_path.exists():
+            cmd.extend(["-c", str(config_path)])
+        elif (Path(self.op25_path) / config_file).exists():
+            cmd.extend(["-c", str(Path(self.op25_path) / config_file)])
+        else:
+            logging.warning(f"Configuration file not found: {config_file}")
+            
+        # Add any additional arguments from settings
+        if self.args:
+            cmd.extend(self.args)
+            
+        return cmd
+        
+    def stop(self, force=False):
+        """Stop OP25 process"""
+        stopped = False
+        
+        # Stop our managed process
+        if self.process and self.process.poll() is None:
+            try:
+                if force:
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                else:
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                    
+                # Wait for graceful shutdown
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                    self.process.wait()
+                    
+                logging.info("OP25 process stopped")
+                stopped = True
+                
+            except Exception as e:
+                logging.error(f"Error stopping OP25 process: {e}")
+                
+        # Stop any other OP25 processes
+        proc = self._find_op25_process()
+        if proc:
+            try:
+                if force:
+                    proc.kill()
+                else:
+                    proc.terminate()
+                    
+                proc.wait(timeout=10)
+                logging.info(f"Stopped OP25 process PID {proc.pid}")
+                stopped = True
+                
+            except (psutil.TimeoutExpired, psutil.NoSuchProcess):
+                if not force:
+                    try:
+                        proc.kill()
+                        proc.wait(timeout=5)
+                        stopped = True
+                    except:
+                        pass
+            except Exception as e:
+                logging.error(f"Error stopping OP25: {e}")
+                
+        # Stop monitoring
+        if self.monitoring_thread:
+            self.stop_event.set()
+            self.monitoring_thread.join(timeout=5)
+            self.monitoring_thread = None
+            
+        self.process = None
+        return stopped
+        
+    def restart(self):
+        """Restart OP25 process"""
+        current_time = time.time()
+        
+        # Check restart cooldown
+        if current_time - self.last_restart_time < self.restart_cooldown:
+            logging.warning("OP25 restart on cooldown")
+            return False
+            
+        # Check restart limit
+        if self.restart_count >= self.max_restarts:
+            logging.error("OP25 restart limit exceeded")
+            return False
+            
+        logging.info("Restarting OP25...")
+        
+        # Stop current process
+        self.stop()
+        time.sleep(2)
+        
+        # Start new process
+        if self.start():
+            self.restart_count += 1
+            self.last_restart_time = current_time
+            logging.info(f"OP25 restarted successfully (restart #{self.restart_count})")
+            return True
+        else:
+            logging.error("Failed to restart OP25")
+            return False
+            
+    def _start_monitoring(self):
+        """Start monitoring thread"""
+        if self.monitoring_thread and self.monitoring_thread.is_alive():
+            return
+            
+        self.stop_event.clear()
+        self.monitoring_thread = Thread(target=self._monitor_process, daemon=True)
+        self.monitoring_thread.start()
+        
+    def _monitor_process(self):
+        """Monitor OP25 process health"""
+        logging.info("Started OP25 process monitoring")
+        
+        while not self.stop_event.wait(10):  # Check every 10 seconds
+            try:
+                if not self.is_running():
+                    logging.warning("OP25 process died unexpectedly")
+                    
+                    # Attempt automatic restart
+                    if self.settings.get("op25_auto_restart", True):
+                        if self.restart():
+                            logging.info("OP25 automatically restarted")
+                        else:
+                            logging.error("Failed to automatically restart OP25")
+                            break
+                    else:
+                        break
+                        
+            except Exception as e:
+                logging.error(f"Error in OP25 monitoring: {e}")
+                
+        logging.info("OP25 monitoring stopped")
+        
+    def get_logs(self, lines=50):
+        """Get recent OP25 logs"""
+        logs = []
+        
+        if self.process:
+            try:
+                # This is a simplified version - in practice you'd want to
+                # capture logs to a file and read from there
+                if self.process.stdout:
+                    # Read available output
+                    import select
+                    if select.select([self.process.stdout], [], [], 0)[0]:
+                        output = self.process.stdout.read(4096).decode('utf-8', errors='ignore')
+                        logs.extend(output.split('\n')[-lines:])
+                        
+            except Exception as e:
+                logging.error(f"Error reading OP25 logs: {e}")
+                
+        return logs
+        
+    def create_default_config(self):
+        """Create default OP25 configuration files"""
+        try:
+            # Create trunk.tsv
+            trunk_content = [
+                '"Sysname"\t"Control Channel List"\t"Offset"\t"NAC"\t"Modulation"\t"TGID Tags File"\t"Whitelist"\t"Blacklist"\t"Center Frequency"',
+                '"Local System"\t"460.025"\t"0"\t"659"\t"cqpsk"\t"talkgroups.tsv"\t""\t""\t""'
+            ]
+            
+            trunk_path = Path("trunk.tsv")
+            with open(trunk_path, 'w') as f:
+                f.write('\n'.join(trunk_content))
+            logging.info(f"Created default trunk.tsv: {trunk_path}")
+            
+            # Create basic scanner.json if it doesn't exist
+            config_path = Path(self.config_file)
+            if not config_path.exists():
+                config = {
+                    "channels": {
+                        "control_channel": {
+                            "frequency": 460025000,
+                            "bandwidth": 12500,
+                            "center_frequency": 460000000
+                        }
+                    },
+                    "trunking": {
+                        "system_name": "Local System", 
+                        "nac": 659,
+                        "sysid": 659,
+                        "wacn": 48193
+                    },
+                    "audio": {
+                        "sample_rate": 8000,
+                        "output_device": "default"
+                    },
+                    "logging": {
+                        "level": 1,
+                        "file": "/tmp/op25.log"
+                    }
+                }
+                
+                import json
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent=4)
+                logging.info(f"Created default scanner.json: {config_path}")
+            
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error creating OP25 config files: {e}")
+            return False
+            
+    def cleanup(self):
+        """Clean up resources"""
+        self.stop()
+        
+    def __del__(self):
+        """Destructor"""
+        try:
+            self.cleanup()
+        except:
+            pass
