@@ -59,7 +59,7 @@ class DisplayManager:
             self.oled = None
     
     def _format_signal_bars(self, extra) -> str:
-        """Return signal bars [||||] based on signal_quality only (true strength)."""
+        """Return signal bars like |||| based on signal_quality only (true strength)."""
         quality = extra.get('signal_quality', None)
         if quality is None:
             bars = 0
@@ -81,7 +81,7 @@ class DisplayManager:
                 bars = 1
             else:
                 bars = 0
-        return "[" + ("|" * bars).ljust(4, " ") + "]"
+        return ("|" * bars).ljust(4, " ")
 
     def _get_system_volume_percent(self, fallback: int = 0) -> int:
         """Return current system output volume percent using PulseAudio or ALSA.
@@ -132,15 +132,62 @@ class DisplayManager:
         return self._get_system_volume_percent(fallback)
 
     def _format_oled_header(self, extra, settings) -> str:
-        """Header: [SIDxx] [Vnn] [L][||||] (<= 20 chars)"""
+        """Header: SIDxx Vnn L |||| (no brackets, <= 20 chars)"""
         sysid = extra.get('sysid')
-        sid = f"[SID{sysid}]" if sysid is not None else "[SID--]"
+        sid = f"SID {sysid}" if sysid is not None else "SID --"
         vol_num = self._get_volume_percent(settings)
-        vol = f"[V{vol_num}]"
-        lock = "[L]" if extra.get('signal_locked') else ""
+        vol = f"V{vol_num}"
+        lock = "L " if extra.get('signal_locked') else "  "
         sig = self._format_signal_bars(extra)
         header = f"{sid} {vol} {lock}{sig}"
         return header[:20]
+
+    def _draw_lock_icon(self, x: int, y: int):
+        """Draw a tiny 6x8 padlock icon at (x,y) on the OLED (mono)."""
+        try:
+            # Body
+            # outer rect 6x5 starting at y+3
+            if hasattr(self.oled, 'rect'):
+                self.oled.rect(x, y + 3, 6, 5, 1)
+                # keyhole
+                self.oled.pixel(x + 3, y + 5, 1)
+            else:
+                # fallback with pixels
+                for dx in range(6):
+                    self.oled.pixel(x + dx, y + 3, 1)
+                    self.oled.pixel(x + dx, y + 7, 1)
+                for dy in range(3, 8):
+                    self.oled.pixel(x, y + dy, 1)
+                    self.oled.pixel(x + 5, y + dy, 1)
+                self.oled.pixel(x + 3, y + 5, 1)
+            # Shackle (u-shape)
+            self.oled.pixel(x + 1, y + 2, 1)
+            self.oled.pixel(x + 4, y + 2, 1)
+            self.oled.pixel(x + 1, y + 1, 1)
+            self.oled.pixel(x + 4, y + 1, 1)
+            for dx in range(2, 4):
+                self.oled.pixel(x + dx, y + 0, 1)
+        except Exception:
+            # If drawing fails, ignore
+            pass
+
+    def _draw_oled_header(self, extra, settings):
+        """Draw header components with a true icon for lock and text bars."""
+        # Left segment: SID + volume
+        sysid = extra.get('sysid')
+        sid = f"SID {sysid}" if sysid is not None else "SID --"
+        vol_num = self._get_volume_percent(settings)
+        left = f"{sid} V{vol_num} "
+        # Draw left text
+        self.oled.text(left[:20], 0, 0, 1)
+        x = min(len(left), 20) * 6  # approximate 6px per char
+        # Lock/icon and bars
+        if extra.get('signal_locked') and x <= 120 - 8:
+            self._draw_lock_icon(x, 0)
+            x += 8
+        bars = self._format_signal_bars(extra)
+        if x < 120:
+            self.oled.text(bars[: max(0, (120 - x) // 6)], x, 0, 1)
             
     def _load_font(self, size=16):
         """Load font with fallbacks"""
@@ -348,8 +395,8 @@ class DisplayManager:
                 # ACTIVE TRANSMISSION - Show 3-line format
                 
                 # Line 1: Custom header
-                header = self._format_oled_header(extra, settings)
-                self.oled.text(header, 0, 0, 1)
+                # Draw composed header: SID/VOL + lock icon + bars
+                self._draw_oled_header(extra, settings)
                 
                 # Line 2: TALKGROUP (get full description with scrolling)
                 talkgroup_text = f"TG {tgid}"
@@ -376,8 +423,8 @@ class DisplayManager:
                 # NO ACTIVE TRANSMISSION - Show scanning status
                 
                 # Line 1: Custom header
-                header = self._format_oled_header(extra, settings)
-                self.oled.text(header, 0, 0, 1)
+                # Draw composed header: SID/VOL + lock icon + bars
+                self._draw_oled_header(extra, settings)
                 
                 # Line 2: Scanning status with scrolling
                 if tgid:

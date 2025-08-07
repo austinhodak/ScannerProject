@@ -11,6 +11,7 @@ import threading
 import logging
 import signal
 import sys
+import subprocess
 
 
 def setup_logging(settings):
@@ -117,6 +118,8 @@ def main():
         last_menu_check = 0
         menu_entry_hold_time = 1.0  # Hold push button for 1 second to enter menu
         push_start_time = None
+        last_volume_adjust_time = 0.0
+        volume_step_percent = 3  # percent per encoder detent
         
         while True:
             try:
@@ -139,6 +142,30 @@ def main():
                 if menu.in_menu_mode():
                     menu.update(buttons)
                 else:
+                    # Adjust system volume with encoder on main display
+                    enc_delta = buttons.get("encoder_delta", 0)
+                    if enc_delta:
+                        now = time.time()
+                        # Combine steps into one system call (rate-limit to 10/sec)
+                        if now - last_volume_adjust_time > 0.05:
+                            adj = abs(enc_delta) * volume_step_percent
+                            sign = '+' if enc_delta > 0 else '-'
+                            # Try PulseAudio
+                            try:
+                                subprocess.run([
+                                    "pactl", "set-sink-volume", "@DEFAULT_SINK@", f"{sign}{adj}%"
+                                ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.5)
+                            except Exception:
+                                # Fallback to ALSA
+                                try:
+                                    # amixer expects e.g. 3%+ or 3%- on some versions
+                                    subprocess.run([
+                                        "amixer", "-q", "set", "Master", f"{adj}%{sign}"
+                                    ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.5)
+                                except Exception:
+                                    pass
+                            last_volume_adjust_time = now
+                    
                     # Update scanner display
                     system, freq, tgid, extra = op25.get_latest()
                     display.update(system, freq, tgid, extra, settings)
