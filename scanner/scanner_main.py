@@ -58,7 +58,8 @@ def main():
         op25_host = settings.get("op25_host", "127.0.0.1")
         op25_port = settings.get("op25_port", 8080)
         system_name = settings.get("system_name", "SCANNER")
-        op25 = OP25Client(host=op25_host, port=op25_port, system_name=system_name)
+        prefer_op25 = settings.get("prefer_op25_system_name", False)
+        op25 = OP25Client(host=op25_host, port=op25_port, system_name=system_name, prefer_op25_name=prefer_op25)
         
         # Initialize display with talkgroup manager
         display = DisplayManager(talkgroup_manager=talkgroup_mgr)

@@ -27,5 +27,6 @@
     "op25_web_host": "127.0.0.1",
     "op25_auto_restart": true,
     "op25_auto_start": true,
-    "system_name": "ERIE COUNTY"
+    "system_name": "ERIE COUNTY",
+    "prefer_op25_system_name": true
 }

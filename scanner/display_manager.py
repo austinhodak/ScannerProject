@@ -2,6 +2,9 @@
 from PIL import Image, ImageDraw, ImageFont
 import os
 from datetime import datetime
+import time
+import subprocess
+import re
 import board
 import busio
 import adafruit_ssd1306
@@ -26,6 +29,9 @@ class DisplayManager:
         self.last_scroll_time = 0
         self.scroll_delay = 0.5  # Seconds between scroll updates
         self.current_scroll_text = ""
+        # Volume cache (reduce shell calls)
+        self._vol_cache = 0
+        self._vol_last_time = 0.0
         
         # Color scheme
         self.colors = {
@@ -51,6 +57,90 @@ class DisplayManager:
             logging.warning(f"OLED display not available: {e}")
             self.oled_available = False
             self.oled = None
+    
+    def _format_signal_bars(self, extra) -> str:
+        """Return signal bars [||||] based on signal_quality only (true strength)."""
+        quality = extra.get('signal_quality', None)
+        if quality is None:
+            bars = 0
+        else:
+            try:
+                q = float(quality)
+            except Exception:
+                q = 0.0
+            # Normalize magnitude; use absolute value since sign differs by backend
+            q = abs(q)
+            # Thresholds can be tuned; map to 0..4 bars
+            if q >= 0.03:
+                bars = 4
+            elif q >= 0.02:
+                bars = 3
+            elif q >= 0.01:
+                bars = 2
+            elif q >= 0.005:
+                bars = 1
+            else:
+                bars = 0
+        return "[" + ("|" * bars).ljust(4, " ") + "]"
+
+    def _get_system_volume_percent(self, fallback: int = 0) -> int:
+        """Return current system output volume percent using PulseAudio or ALSA.
+        Caches for ~1s to avoid frequent shell calls.
+        """
+        now = time.time()
+        if now - self._vol_last_time < 1.0:
+            return self._vol_cache
+        vol = fallback
+        # Try PulseAudio (pactl)
+        try:
+            out = subprocess.check_output(
+                ["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=0.4,
+            )
+            m = re.search(r"(\d{1,3})%", out)
+            if m:
+                vol = int(m.group(1))
+        except Exception:
+            # Try ALSA (amixer)
+            try:
+                out = subprocess.check_output(
+                    ["amixer", "get", "Master"],
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                    timeout=0.4,
+                )
+                m = re.search(r"\[(\d{1,3})%\]", out)
+                if m:
+                    vol = int(m.group(1))
+            except Exception:
+                pass
+        vol = max(0, min(100, int(vol)))
+        self._vol_cache = vol
+        self._vol_last_time = now
+        return vol
+
+    def _get_volume_percent(self, settings) -> int:
+        """Return current system volume percentage; fallback to settings volume_level."""
+        fallback = 0
+        try:
+            if settings is not None:
+                fallback = int(settings.get('volume_level', 0))
+        except Exception:
+            fallback = 0
+        return self._get_system_volume_percent(fallback)
+
+    def _format_oled_header(self, extra, settings) -> str:
+        """Header: [SIDxx] [Vnn] [L][||||] (<= 20 chars)"""
+        sysid = extra.get('sysid')
+        sid = f"[SID{sysid}]" if sysid is not None else "[SID--]"
+        vol_num = self._get_volume_percent(settings)
+        vol = f"[V{vol_num}]"
+        lock = "[L]" if extra.get('signal_locked') else ""
+        sig = self._format_signal_bars(extra)
+        header = f"{sid} {vol} {lock}{sig}"
+        return header[:20]
             
     def _load_font(self, size=16):
         """Load font with fallbacks"""
@@ -129,7 +219,7 @@ class DisplayManager:
     def update(self, system, freq, tgid, extra, settings):
         self.update_tft(system, freq, tgid, extra, settings)
         if self.oled_available:
-            self.update_oled(system, freq, tgid, extra)
+            self.update_oled(system, freq, tgid, extra, settings)
 
     def update_tft(self, system, freq, tgid, extra, settings):
         """Update TFT display with current scanner information"""
@@ -239,7 +329,7 @@ class DisplayManager:
         except Exception as e:
             logging.error(f"Error updating TFT display: {e}")
 
-    def update_oled(self, system, freq, tgid, extra=None):
+    def update_oled(self, system, freq, tgid, extra=None, settings=None):
         """Update OLED display with transmission information"""
         if not self.oled_available or self.oled is None:
             return
@@ -257,9 +347,9 @@ class DisplayManager:
             if active_transmission and tgid:
                 # ACTIVE TRANSMISSION - Show 3-line format
                 
-                # Line 1: SYSTEM (truncated to fit)
-                system_text = system[:20] if system else "UNKNOWN SYSTEM"
-                self.oled.text(system_text, 0, 0, 1)
+                # Line 1: Custom header
+                header = self._format_oled_header(extra, settings)
+                self.oled.text(header, 0, 0, 1)
                 
                 # Line 2: TALKGROUP (get full description with scrolling)
                 talkgroup_text = f"TG {tgid}"
@@ -285,9 +375,9 @@ class DisplayManager:
             else:
                 # NO ACTIVE TRANSMISSION - Show scanning status
                 
-                # Line 1: System name
-                system_text = system[:20] if system else "SCANNER"
-                self.oled.text(system_text, 0, 0, 1)
+                # Line 1: Custom header
+                header = self._format_oled_header(extra, settings)
+                self.oled.text(header, 0, 0, 1)
                 
                 # Line 2: Scanning status with scrolling
                 if tgid:

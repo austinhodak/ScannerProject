@@ -5,11 +5,12 @@ import logging
 from datetime import datetime, timedelta
 
 class OP25Client:
-    def __init__(self, host="127.0.0.1", port=8080, system_name=None):
+    def __init__(self, host="127.0.0.1", port=8080, system_name=None, prefer_op25_name=False):
         self.host = host
         self.port = port
         self.base_url = f"http://{host}:{port}"
         self.system_name = system_name or "SCANNER"  # Default fallback
+        self.prefer_op25_name = prefer_op25_name
         self.latest_data = (self.system_name, None, None, {})
         self.last_update = None
         self.connection_errors = 0
@@ -151,7 +152,7 @@ class OP25Client:
                         tgid = ch_data.get("tgid")
                         srcaddr = ch_data.get("srcaddr", 0)
                         ch_system = ch_data.get("system")
-                        if ch_system:
+                        if ch_system and self.prefer_op25_name:
                             system = ch_system
                         
                         # Check if this is an active transmission
@@ -234,7 +235,7 @@ class OP25Client:
                             
                         # Extract system name (multi_rx.py format has it directly)
                         sys_system = sys_data.get("system")
-                        if sys_system:
+                        if sys_system and self.prefer_op25_name:
                             system = sys_system
                         else:
                             # Fallback to configured system name
