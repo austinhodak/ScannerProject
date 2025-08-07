@@ -17,7 +17,7 @@
     "audio_device": "default",
     "recording_path": "/tmp/recordings",
     "log_level": "INFO",
-    "op25_path": "/opt/op25/op25/gr-op25_repeater/apps",
+    "op25_path": "/home/ahodak/op25/op25/gr-op25_repeater/apps",
     "op25_config": "scanner.json",
     "op25_log_level": 1,
     "op25_freq_error": 0,

@@ -21,7 +21,7 @@ class OP25Manager:
         self.restart_cooldown = 30  # 30 seconds between restarts
         
         # OP25 configuration
-        self.op25_path = self.settings.get("op25_path", "/opt/op25/op25/gr-op25_repeater/apps")
+        self.op25_path = self.settings.get("op25_path", "/home/ahodak/op25/op25/gr-op25_repeater/apps")
         self.config_file = self.settings.get("op25_config", "scanner.json")
         self.log_level = self.settings.get("op25_log_level", 1)
         self.freq_error = self.settings.get("op25_freq_error", 0)
