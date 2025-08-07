@@ -175,12 +175,24 @@ class OP25Manager:
             
             # Start process with proper environment
             env = os.environ.copy()
-            env['PYTHONPATH'] = self.op25_path + ':' + env.get('PYTHONPATH', '')
+            # Ensure OP25 python modules are importable when not running from OP25 repo
+            apps_dir = Path(self.op25_path)
+            gr_dir = apps_dir.parent  # gr-op25_repeater
+            op25_core_dir = gr_dir.parent  # op25/op25
+            extra_paths = [str(apps_dir), str(op25_core_dir)]
+            existing_pp = env.get('PYTHONPATH', '')
+            env['PYTHONPATH'] = ':'.join(p for p in (':'.join(extra_paths), existing_pp) if p)
             
+            # Execute multi_rx by absolute path to avoid import path confusion
+            multi_rx_path = str(Path(self.op25_path) / 'multi_rx.py')
+            final_cmd = ['python3', multi_rx_path]
+            if len(cmd) > 2:
+                final_cmd.extend(cmd[2:])
+
             # Inherit parent's stdout/stderr so multi_rx logs print directly to terminal
             # No pipes, no background reader threads – lowest overhead, avoids freezes
             self.process = subprocess.Popen(
-                cmd,
+                final_cmd,
                 cwd=cwd,
                 env=env,
                 preexec_fn=os.setsid  # Create new process group
