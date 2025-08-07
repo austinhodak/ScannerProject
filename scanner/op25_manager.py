@@ -43,11 +43,11 @@ class OP25Manager:
         """Find existing OP25 process by name"""
         try:
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                if proc.info['name'] and 'rx.py' in proc.info['name']:
+                if proc.info['name'] and ('multi_rx.py' in proc.info['name'] or 'rx.py' in proc.info['name']):
                     return proc
                 if proc.info['cmdline']:
                     cmdline = ' '.join(proc.info['cmdline'])
-                    if 'rx.py' in cmdline or 'op25' in cmdline.lower():
+                    if 'multi_rx.py' in cmdline or 'rx.py' in cmdline or 'op25' in cmdline.lower():
                         return proc
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
@@ -58,11 +58,11 @@ class OP25Manager:
         processes = []
         try:
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                if proc.info['name'] and 'rx.py' in proc.info['name']:
+                if proc.info['name'] and ('multi_rx.py' in proc.info['name'] or 'rx.py' in proc.info['name']):
                     processes.append(proc)
                 elif proc.info['cmdline']:
                     cmdline = ' '.join(proc.info['cmdline'])
-                    if 'rx.py' in cmdline or 'op25' in cmdline.lower():
+                    if 'multi_rx.py' in cmdline or 'rx.py' in cmdline or 'op25' in cmdline.lower():
                         processes.append(proc)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
@@ -138,35 +138,20 @@ class OP25Manager:
             return False
             
     def _build_command(self, config_file):
-        """Build OP25 command line"""
-        cmd = ["python3", "rx.py"]
+        """Build OP25 command line for multi_rx.py"""
+        cmd = ["python3", "multi_rx.py"]
         
-        # Use custom arguments from settings if provided, otherwise use defaults
-        if self.args:
-            # Use the custom arguments from settings.json
-            cmd.extend(self.args)
+        # multi_rx.py uses a simpler command format: multi_rx.py -c cfg.json
+        # Add configuration file
+        config_path = Path(config_file)
+        if config_path.exists():
+            cmd.extend(["-c", str(config_path)])
+        elif (Path(self.op25_path) / config_file).exists():
+            cmd.extend(["-c", str(Path(self.op25_path) / config_file)])
         else:
-            # Fallback to default arguments if no custom ones are specified
-            cmd.extend([
-                "--args", self.gain,
-                "--freq-corr", str(self.freq_error),
-                "--fine-tune", str(self.fine_tune),
-                "-v", str(self.log_level),
-                "-2",  # Phase 2 mode
-                "-T", "trunk.tsv",  # Trunk configuration file
-                "-w",  # Enable web interface
-                "-W", f"{self.web_host}",  # Web host
-                "-P", f"{self.web_port}",  # Web port
-            ])
-            
-            # Add configuration file if it exists (only for default mode)
-            config_path = Path(config_file)
-            if config_path.exists():
-                cmd.extend(["-c", str(config_path)])
-            elif (Path(self.op25_path) / config_file).exists():
-                cmd.extend(["-c", str(Path(self.op25_path) / config_file)])
-            else:
-                logging.warning(f"Configuration file not found: {config_file}")
+            # Default to cfg.json if no specific config file found
+            cmd.extend(["-c", "cfg.json"])
+            logging.info(f"Using default config file: cfg.json")
             
         return cmd
         

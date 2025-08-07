@@ -13,11 +13,12 @@ def find_all_op25_processes():
     processes = []
     try:
         for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            if proc.info['name'] and 'rx.py' in proc.info['name']:
+            if proc.info['name'] and ('multi_rx.py' in proc.info['name'] or 'rx.py' in proc.info['name']):
                 processes.append(proc)
             elif proc.info['cmdline']:
                 cmdline = ' '.join(proc.info['cmdline'])
-                if 'rx.py' in cmdline or ('python' in cmdline and 'rx.py' in cmdline):
+                if ('multi_rx.py' in cmdline or 'rx.py' in cmdline or 
+                    ('python' in cmdline and ('multi_rx.py' in cmdline or 'rx.py' in cmdline))):
                     processes.append(proc)
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         pass

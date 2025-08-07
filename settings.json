@@ -18,7 +18,7 @@
     "recording_path": "/tmp/recordings",
     "log_level": "INFO",
     "op25_path": "/home/ahodak/op25/op25/gr-op25_repeater/apps",
-    "op25_config": "scanner.json",
+    "op25_config": "cfg.json",
     "op25_log_level": 1,
     "op25_freq_error": 0,
     "op25_fine_tune": 0.0,
@@ -27,23 +27,5 @@
     "op25_web_host": "127.0.0.1",
     "op25_auto_restart": true,
     "op25_auto_start": true,
-    "op25_args": [
-        "--args",
-        "rtl",
-        "-N",
-        "LNA:47",
-        "-S",
-        "2400000",
-        "-T",
-        "trunk.tsv",
-        "-V",
-        "-2",
-        "-U",
-        "-w",
-        "-l",
-        "http:0.0.0.0:8080",
-        "-O",
-        "pulse"
-    ],
     "system_name": "ERIE COUNTY"
 }
