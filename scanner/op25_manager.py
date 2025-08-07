@@ -8,7 +8,7 @@ import os
 import queue
 import select
 from pathlib import Path
-from threading import Thread, Event
+from threading import Thread, Event, Lock
 
 
 class OP25Manager:
@@ -17,10 +17,12 @@ class OP25Manager:
         self.process = None
         self.monitoring_thread = None
         self.stop_event = Event()
+        self._start_lock = Lock()
         self.restart_count = 0
         self.max_restarts = 5
         self.last_restart_time = 0
         self.restart_cooldown = 30  # 30 seconds between restarts
+        self.pid_file = Path('/tmp/multi_rx.pid')
         
         # OP25 configuration
         self.op25_path = self.settings.get("op25_path", "/home/ahodak/op25/op25/gr-op25_repeater/apps")
@@ -38,12 +40,24 @@ class OP25Manager:
         # Log monitoring
         self.log_queue = queue.Queue(maxsize=1000)  # Store recent log lines
         self.log_thread = None
-        self.show_logs_in_terminal = True  # Enable terminal log display
+        # Default off to reduce CPU/IO load; can be toggled from menu
+        self.show_logs_in_terminal = False
         
     def is_running(self):
         """Check if OP25 process is running"""
+        # Prefer our managed process handle if available
         if self.process and self.process.poll() is None:
             return True
+        # Fallback to PID file check
+        try:
+            if self.pid_file.exists():
+                pid_text = self.pid_file.read_text().strip()
+                if pid_text.isdigit():
+                    pid = int(pid_text)
+                    return psutil.pid_exists(pid)
+        except Exception:
+            pass
+        # As a last resort, search processes
         return self._find_op25_process() is not None
         
     def _find_op25_process(self):
@@ -65,12 +79,17 @@ class OP25Manager:
         processes = []
         try:
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                if proc.info['name'] and ('multi_rx.py' in proc.info['name'] or 'rx.py' in proc.info['name']):
-                    processes.append(proc)
-                elif proc.info['cmdline']:
-                    cmdline = ' '.join(proc.info['cmdline'])
-                    if 'multi_rx.py' in cmdline or 'rx.py' in cmdline or 'op25' in cmdline.lower():
-                        processes.append(proc)
+                try:
+                    # Only consider processes that look like our multi_rx execution
+                    if proc.info['cmdline']:
+                        cmdline = ' '.join(proc.info['cmdline'])
+                        if 'multi_rx.py' in cmdline:
+                            processes.append(proc)
+                        # Legacy support: rx.py
+                        elif 'rx.py' in cmdline:
+                            processes.append(proc)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    continue
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
         return processes
@@ -175,13 +194,24 @@ class OP25Manager:
         
     def start(self, config_file=None):
         """Start OP25 process"""
-        if self.is_running():
-            logging.info("OP25 is already running")
-            return True
+        # Prevent concurrent starts
+        with self._start_lock:
+            if self.is_running():
+                logging.info("OP25 is already running")
+                return True
             
         try:
             config_file = config_file or self.config_file
             
+            # Validate/resolve configuration file
+            if config_file and not Path(config_file).exists():
+                # Try relative to op25_path
+                candidate = Path(self.op25_path) / config_file
+                if not candidate.exists():
+                    logging.error(f"Config file not found: {config_file}")
+                    return False
+                config_file = str(candidate)
+
             # Build command line arguments
             cmd = self._build_command(config_file)
             
@@ -194,25 +224,36 @@ class OP25Manager:
             env = os.environ.copy()
             env['PYTHONPATH'] = self.op25_path + ':' + env.get('PYTHONPATH', '')
             
+            # Use unbuffered output (-u) to avoid pipe blocking; merge stderr to stdout
             self.process = subprocess.Popen(
-                cmd,
+                ["python3", "-u"] + cmd[1:],
                 cwd=cwd,
                 env=env,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                preexec_fn=os.setsid  # Create new process group
+                stderr=subprocess.STDOUT,
+                bufsize=1
+                , preexec_fn=os.setsid  # Create new process group
             )
             
             # Wait a moment to see if process starts successfully
             time.sleep(2)
             
-            if self.process.poll() is None:
+            if self.process and self.process.poll() is None:
                 logging.info(f"OP25 started successfully with PID {self.process.pid}")
+                # Write PID file
+                try:
+                    self.pid_file.write_text(str(self.process.pid))
+                except Exception as e:
+                    logging.debug(f"Could not write pid file: {e}")
                 self._start_monitoring()
                 return True
             else:
-                stdout, stderr = self.process.communicate()
-                logging.error(f"OP25 failed to start: {stderr.decode()}")
+                output = b""
+                try:
+                    output = self.process.stdout.read() or b""
+                except Exception:
+                    pass
+                logging.error(f"OP25 failed to start. Output: {output.decode(errors='ignore')}")
                 return False
                 
         except Exception as e:
@@ -262,11 +303,13 @@ class OP25Manager:
             except Exception as e:
                 logging.error(f"Error stopping OP25 process: {e}")
                 
-        # Stop ALL other OP25 processes
+        # Stop ALL other OP25 processes except our managed one
         all_procs = self._find_all_op25_processes()
         if all_procs:
             logging.info(f"Found {len(all_procs)} OP25 processes to stop")
             for proc in all_procs:
+                if self.process and proc.pid == self.process.pid:
+                    continue
                 try:
                     if force:
                         proc.kill()
@@ -294,8 +337,29 @@ class OP25Manager:
             self.stop_event.set()
             self.monitoring_thread.join(timeout=5)
             self.monitoring_thread = None
+        # Join log thread if running
+        if self.log_thread:
+            try:
+                self.log_thread.join(timeout=2)
+            except Exception:
+                pass
+            self.log_thread = None
+
+        # Close pipes to unblock any readers
+        try:
+            if self.process and self.process.stdout:
+                self.process.stdout.close()
+        except Exception:
+            pass
             
         self.process = None
+
+        # Remove PID file
+        try:
+            if self.pid_file.exists():
+                self.pid_file.unlink()
+        except Exception:
+            pass
         return stopped
         
     def restart(self):
@@ -303,7 +367,9 @@ class OP25Manager:
         current_time = time.time()
         
         # Check restart cooldown
-        if current_time - self.last_restart_time < self.restart_cooldown:
+        # Exponential backoff up to 5 minutes
+        dynamic_cooldown = min(300, max(self.restart_cooldown, 2 ** self.restart_count))
+        if current_time - self.last_restart_time < dynamic_cooldown:
             logging.warning("OP25 restart on cooldown")
             return False
             
@@ -339,8 +405,8 @@ class OP25Manager:
         self.monitoring_thread = Thread(target=self._monitor_process, daemon=True)
         self.monitoring_thread.start()
         
-        # Start log monitoring thread
-        if self.process and self.process.stdout:
+        # Start log monitoring thread (only if terminal logging is enabled)
+        if self.show_logs_in_terminal and self.process and self.process.stdout:
             self.log_thread = Thread(target=self._log_monitor_thread, daemon=True)
             self.log_thread.start()
             print("\033[92m[Scanner] Multi_rx log monitoring started\033[0m")
@@ -371,23 +437,8 @@ class OP25Manager:
         
     def get_logs(self, lines=50):
         """Get recent OP25 logs"""
-        logs = []
-        
-        if self.process:
-            try:
-                # This is a simplified version - in practice you'd want to
-                # capture logs to a file and read from there
-                if self.process.stdout:
-                    # Read available output
-                    import select
-                    if select.select([self.process.stdout], [], [], 0)[0]:
-                        output = self.process.stdout.read(4096).decode('utf-8', errors='ignore')
-                        logs.extend(output.split('\n')[-lines:])
-                        
-            except Exception as e:
-                logging.error(f"Error reading OP25 logs: {e}")
-                
-        return logs
+        # Prefer the in-memory queue, which the log thread fills
+        return self.get_recent_logs(lines)
         
     def create_default_config(self):
         """Create default OP25 configuration files"""
