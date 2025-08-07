@@ -107,7 +107,7 @@ class OP25Client:
             return "Disconnected"
 
     def parse(self, data):
-        """Parse OP25 JSON data into scanner format"""
+        """Parse OP25 JSON data into scanner format (supports both rx.py and multi_rx.py formats)"""
         if not data or not isinstance(data, list):
             logging.debug("Invalid or empty data received from OP25")
             return None
@@ -117,7 +117,7 @@ class OP25Client:
             logging.debug("Empty data array received from OP25 - maintaining current state")
             return None
 
-        system = "Unknown"
+        system = self.system_name  # Use configured system name
         freq = None
         tgid = None
         extra = {}
@@ -127,38 +127,82 @@ class OP25Client:
         srcaddr = 0
 
         try:
-            # Look for active transmission info first
+            # Look for channel updates (multi_rx.py format) and transmission info
             for item in data:
                 if not isinstance(item, dict):
                     continue
                     
                 json_type = item.get("json_type")
                 
-                # Check for active transmission via trunk_update
-                if json_type == "trunk_update":
-                    srcaddr = item.get("srcaddr", 0)
-                    grpaddr = item.get("grpaddr", 0)
+                # NEW: Handle multi_rx.py channel_update format
+                if json_type == "channel_update":
+                    # Look through channel data
+                    for ch_id, ch_data in item.items():
+                        if ch_id in ["json_type", "channels"]:
+                            continue
+                        if not isinstance(ch_data, dict):
+                            continue
+                            
+                        # Extract transmission info
+                        ch_freq = ch_data.get("freq")
+                        if ch_freq:
+                            freq = ch_freq / 1e6  # Convert Hz to MHz
+                        
+                        tgid = ch_data.get("tgid")
+                        srcaddr = ch_data.get("srcaddr", 0)
+                        ch_system = ch_data.get("system")
+                        if ch_system:
+                            system = ch_system
+                        
+                        # Check if this is an active transmission
+                        if srcaddr and srcaddr > 0 and tgid and tgid > 0:
+                            active_transmission = True
+                            logging.debug(f"Active transmission: TGID={tgid}, SRC={srcaddr}")
+                            
+                        extra.update({
+                            "srcaddr": srcaddr,
+                            "tgid": tgid,
+                            "encrypted": ch_data.get("encrypted", 0),
+                            "emergency": ch_data.get("emergency", 0),
+                            "active": active_transmission,
+                            "channel_name": ch_data.get("name", f"Channel {ch_id}"),
+                            "tag": ch_data.get("tag", ""),
+                            "srctag": ch_data.get("srctag", ""),
+                            "mode": ch_data.get("mode"),
+                            "signal_quality": ch_data.get("signal_quality", 0),
+                            "signal_locked": ch_data.get("signal_locked", 0),
+                            "error": ch_data.get("error", 0)
+                        })
+                
+                # Check for active transmission via trunk_update (both old and new formats)
+                elif json_type == "trunk_update":
+                    # Check for old rx.py format (srcaddr/grpaddr at top level)
+                    old_srcaddr = item.get("srcaddr", 0)
+                    old_grpaddr = item.get("grpaddr", 0)
                     encrypted = item.get("encrypted", False)
                     nac = item.get("nac", 0)
                     
-                    # Active transmission if srcaddr is not 0
-                    if srcaddr != 0:
+                    # Active transmission if srcaddr is not 0 (old format)
+                    if old_srcaddr != 0:
                         active_transmission = True
-                        tgid = grpaddr
+                        tgid = old_grpaddr
+                        srcaddr = old_srcaddr
                         extra.update({
-                            "srcaddr": srcaddr,
+                            "srcaddr": old_srcaddr,
                             "encrypted": encrypted,
                             "nac": nac,
                             "active": True
                         })
-                        logging.debug(f"Active transmission: TGID={tgid}, SRC={srcaddr}")
+                        logging.debug(f"Active transmission (old format): TGID={tgid}, SRC={srcaddr}")
                 
-                # Get frequency info from change_freq
+                # Get frequency info from change_freq (old rx.py format)
                 elif json_type == "change_freq":
                     current_freq = item.get("freq")
                     if current_freq:
                         freq = current_freq / 1e6  # Convert Hz to MHz
-                        system = item.get("system", "Unknown")
+                        old_system = item.get("system", "Unknown")
+                        if old_system != "Unknown":
+                            system = old_system
                         extra.update({
                             "nac": item.get("nac", 0),
                             "wacn": item.get("wacn", 0),
@@ -188,24 +232,28 @@ class OP25Client:
                         if not isinstance(sys_data, dict):
                             continue
                             
-                        # Use consistent system name instead of dynamic system ID
-                        top_line = sys_data.get("top_line", "")
-                        if top_line and "NAC" in top_line:
-                            # Use the configured system name instead of generating from sysid
+                        # Extract system name (multi_rx.py format has it directly)
+                        sys_system = sys_data.get("system")
+                        if sys_system:
+                            system = sys_system
+                        else:
+                            # Fallback to configured system name
                             system = self.system_name
                             
                         # Get current control channel frequency
                         rxchan = sys_data.get("rxchan")
-                        if rxchan and not freq:  # Only if we don't have freq from change_freq
+                        if rxchan and not freq:  # Only if we don't have freq from channel_update
                             freq = rxchan / 1e6
                             
                         extra.update({
                             "sysid": sys_data.get("sysid", sys_id),
                             "wacn": sys_data.get("wacn", 0),
+                            "nac": sys_data.get("nac", 0),
                             "rxchan": sys_data.get("rxchan", 0),
                             "txchan": sys_data.get("txchan", 0),
-                            "tsbks": sys_data.get("tsbks", 0),
-                            "active": False
+                            "rfid": sys_data.get("rfid", 0),
+                            "stid": sys_data.get("stid", 0),
+                            "active": active_transmission
                         })
                         
                         # Look for recent activity in frequency_data
