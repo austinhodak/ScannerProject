@@ -26,8 +26,8 @@ class SettingsManager:
             "audio_device": "default",
             "recording_path": "/tmp/recordings",
             "log_level": "INFO",
-            "op25_path": "/opt/op25/op25/gr-op25_repeater/apps",
-            "op25_config": "scanner.json",
+            "op25_path": "/home/ahodak/op25/op25/gr-op25_repeater/apps",
+            "op25_config": "cfg.json",
             "op25_log_level": 1,
             "op25_freq_error": 0,
             "op25_fine_tune": 0.0,
@@ -36,7 +36,7 @@ class SettingsManager:
             "op25_web_host": "127.0.0.1",
             "op25_auto_restart": True,
             "op25_auto_start": False,
-            "op25_args": []
+            "system_name": "SCANNER"
         }
         self.load()
 
@@ -80,8 +80,10 @@ class SettingsManager:
     def save(self):
         """Save settings to file"""
         try:
-            # Ensure directory exists
-            os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
+            # Ensure directory exists (only if filepath contains a directory)
+            dir_path = os.path.dirname(self.filepath)
+            if dir_path:  # Only create directory if there is a directory path
+                os.makedirs(dir_path, exist_ok=True)
             
             with open(self.filepath, 'w') as f:
                 json.dump(self.settings, f, indent=4)

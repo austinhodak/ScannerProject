@@ -21,7 +21,7 @@ class MenuSystem:
             "Audio Settings": ["Volume", "Mute", "Recording", "Audio Device", "Back"],
             "Display Settings": ["Brightness", "Timeout", "Show Debug", "Color Scheme", "Back"],
             "System Settings": ["API Port", "Web Interface", "Reboot System", "Reset Settings", "Back"],
-            "OP25 Management": ["Start OP25", "Stop OP25", "Restart OP25", "OP25 Status", "OP25 Config", "Create OP25 Config", "OP25 Logs", "Back"],
+            "OP25 Management": ["Start OP25", "Stop OP25", "Restart OP25", "OP25 Status", "OP25 Config", "Create OP25 Config", "OP25 Logs", "Toggle Terminal Logs", "Back"],
             "Information": ["System Status", "OP25 Status", "Network Info", "Disk Usage", "Talkgroups", "Back"]
         }
 
@@ -183,6 +183,8 @@ class MenuSystem:
                 self._show_op25_config()
             elif action == "OP25 Logs":
                 self._show_op25_logs()
+            elif action == "Toggle Terminal Logs":
+                self._toggle_terminal_logs()
             elif action == "Create OP25 Config":
                 self._create_op25_config()
             # System actions
@@ -333,14 +335,29 @@ class MenuSystem:
             time.sleep(2)
             return
             
-        logs = self.op25_manager.get_logs(10)
+        logs = self.op25_manager.get_recent_logs(10)
         if logs:
-            # Show last few log lines
+            # Show the most recent logs
             message = "\n".join(logs[-3:]) if len(logs) >= 3 else "\n".join(logs)
             self.display.show_message("OP25 Logs", message)
         else:
             self.display.show_message("OP25 Logs", "No logs available")
         time.sleep(4)
+    
+    def _toggle_terminal_logs(self):
+        """Toggle OP25 terminal log display"""
+        if not self.op25_manager:
+            self.display.show_message("Error", "OP25 manager not available")
+            time.sleep(2)
+            return
+            
+        # Toggle the setting
+        current = self.op25_manager.show_logs_in_terminal
+        self.op25_manager.set_terminal_logging(not current)
+        
+        status = "enabled" if not current else "disabled"
+        self.display.show_message("Terminal Logs", f"Multi_rx logs {status}")
+        time.sleep(2)
         
     def _create_op25_config(self):
         """Create default OP25 configuration files"""

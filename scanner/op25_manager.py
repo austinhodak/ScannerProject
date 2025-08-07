@@ -5,6 +5,8 @@ import time
 import logging
 import signal
 import os
+import queue
+import select
 from pathlib import Path
 from threading import Thread, Event
 
@@ -32,6 +34,11 @@ class OP25Manager:
         # Web interface settings
         self.web_port = self.settings.get("op25_web_port", 8080)
         self.web_host = self.settings.get("op25_web_host", "127.0.0.1")
+        
+        # Log monitoring
+        self.log_queue = queue.Queue(maxsize=1000)  # Store recent log lines
+        self.log_thread = None
+        self.show_logs_in_terminal = True  # Enable terminal log display
         
     def is_running(self):
         """Check if OP25 process is running"""
@@ -67,6 +74,81 @@ class OP25Manager:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
         return processes
+    
+    def _log_monitor_thread(self):
+        """Monitor OP25 process logs and display in terminal"""
+        if not self.process:
+            return
+            
+        try:
+            # Monitor both stdout and stderr
+            while self.process and self.process.poll() is None:
+                # Use select to check if data is available (Unix/Linux only)
+                if hasattr(select, 'select'):
+                    ready, _, _ = select.select([self.process.stdout, self.process.stderr], [], [], 0.1)
+                    
+                    for stream in ready:
+                        line = stream.readline()
+                        if line:
+                            line_str = line.decode('utf-8', errors='ignore').strip()
+                            if line_str:
+                                # Add to queue for retrieval
+                                try:
+                                    self.log_queue.put_nowait(line_str)
+                                except queue.Full:
+                                    # Remove oldest entry if queue is full
+                                    try:
+                                        self.log_queue.get_nowait()
+                                        self.log_queue.put_nowait(line_str)
+                                    except queue.Empty:
+                                        pass
+                                
+                                # Display in terminal if enabled
+                                if self.show_logs_in_terminal:
+                                    # Color code the output
+                                    if stream == self.process.stderr or 'ERROR' in line_str.upper() or 'FAIL' in line_str.upper():
+                                        print(f"\033[91m[multi_rx] {line_str}\033[0m")  # Red for errors
+                                    elif 'WARN' in line_str.upper():
+                                        print(f"\033[93m[multi_rx] {line_str}\033[0m")  # Yellow for warnings
+                                    elif 'trunk' in line_str.lower() or 'tgid' in line_str.lower():
+                                        print(f"\033[92m[multi_rx] {line_str}\033[0m")  # Green for activity
+                                    else:
+                                        print(f"\033[96m[multi_rx] {line_str}\033[0m")  # Cyan for general info
+                else:
+                    # Fallback for systems without select (like Windows)
+                    time.sleep(0.1)
+                    
+        except Exception as e:
+            logging.debug(f"Log monitor thread error: {e}")
+    
+    def get_recent_logs(self, count=50):
+        """Get recent log lines from the queue"""
+        logs = []
+        temp_logs = []
+        
+        # Drain the queue
+        while not self.log_queue.empty() and len(temp_logs) < count:
+            try:
+                temp_logs.append(self.log_queue.get_nowait())
+            except queue.Empty:
+                break
+        
+        # Put back the logs we took out (keep most recent)
+        for log in temp_logs[-count:]:
+            try:
+                self.log_queue.put_nowait(log)
+            except queue.Full:
+                break
+                
+        return temp_logs[-count:]
+    
+    def set_terminal_logging(self, enabled):
+        """Enable or disable terminal log display"""
+        self.show_logs_in_terminal = enabled
+        if enabled:
+            print("\033[92m[Scanner] Multi_rx terminal logging enabled\033[0m")
+        else:
+            print("\033[93m[Scanner] Multi_rx terminal logging disabled\033[0m")
         
     def get_status(self):
         """Get detailed status of OP25 process"""
@@ -247,13 +329,21 @@ class OP25Manager:
             return False
             
     def _start_monitoring(self):
-        """Start monitoring thread"""
+        """Start monitoring threads"""
         if self.monitoring_thread and self.monitoring_thread.is_alive():
             return
             
         self.stop_event.clear()
+        
+        # Start process health monitoring thread
         self.monitoring_thread = Thread(target=self._monitor_process, daemon=True)
         self.monitoring_thread.start()
+        
+        # Start log monitoring thread
+        if self.process and self.process.stdout:
+            self.log_thread = Thread(target=self._log_monitor_thread, daemon=True)
+            self.log_thread.start()
+            print("\033[92m[Scanner] Multi_rx log monitoring started\033[0m")
         
     def _monitor_process(self):
         """Monitor OP25 process health"""
