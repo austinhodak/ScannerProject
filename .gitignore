@@ -248,6 +248,5 @@ tmp/
 
 # OP25 specific generated files
 *.dat
-*.bin
 
 .idea/
