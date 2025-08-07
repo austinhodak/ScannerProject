@@ -20,6 +20,13 @@ class DisplayManager:
         self.font_med = self._load_font(size=16)
         self.font_large = self._load_font(size=24)
         
+        # Initialize scrolling state for OLED
+        self.scroll_offset = 0
+        self.scroll_direction = 1
+        self.last_scroll_time = 0
+        self.scroll_delay = 0.5  # Seconds between scroll updates
+        self.current_scroll_text = ""
+        
         # Color scheme
         self.colors = {
             'background': 'black',
@@ -66,6 +73,58 @@ class DisplayManager:
             return ImageFont.load_default()
         except:
             return None
+    
+    def _get_scrolling_text(self, text, max_width=20):
+        """Get scrolling text if text is longer than max_width"""
+        import time
+        
+        if len(text) <= max_width:
+            return text
+            
+        # Check if enough time has passed for next scroll step
+        current_time = time.time()
+        if current_time - self.last_scroll_time < self.scroll_delay:
+            # Return current position
+            if hasattr(self, 'current_scroll_text') and self.current_scroll_text:
+                return self.current_scroll_text[:max_width]
+            else:
+                return text[:max_width]
+        
+        # Update scroll position
+        self.last_scroll_time = current_time
+        
+        # Add padding to create smooth scrolling
+        padded_text = text + "   "  # 3 spaces padding
+        text_len = len(padded_text)
+        
+        # Calculate scroll position
+        if text_len <= max_width:
+            scrolled_text = padded_text
+        else:
+            # Scroll back and forth
+            max_offset = text_len - max_width
+            
+            if self.scroll_direction == 1:  # Scrolling right
+                self.scroll_offset += 1
+                if self.scroll_offset >= max_offset:
+                    self.scroll_direction = -1  # Start scrolling back
+                    # Pause at the end for readability
+                    self.scroll_delay = 1.0
+                else:
+                    self.scroll_delay = 0.5
+            else:  # Scrolling left
+                self.scroll_offset -= 1
+                if self.scroll_offset <= 0:
+                    self.scroll_direction = 1  # Start scrolling forward
+                    # Pause at the beginning for readability
+                    self.scroll_delay = 1.0
+                else:
+                    self.scroll_delay = 0.5
+            
+            scrolled_text = padded_text[self.scroll_offset:self.scroll_offset + max_width]
+        
+        self.current_scroll_text = scrolled_text
+        return scrolled_text
 
     def update(self, system, freq, tgid, extra, settings):
         self.update_tft(system, freq, tgid, extra, settings)
@@ -181,7 +240,7 @@ class DisplayManager:
             logging.error(f"Error updating TFT display: {e}")
 
     def update_oled(self, system, freq, tgid, extra=None):
-        """Update OLED display with basic scanner information"""
+        """Update OLED display with transmission information"""
         if not self.oled_available or self.oled is None:
             return
             
@@ -191,41 +250,72 @@ class DisplayManager:
         try:
             self.oled.fill(0)
             
-            # System name (truncated)
-            system_text = system[:20] if system else "No System"
-            self.oled.text(system_text, 0, 0, 1)
+            # Check if there's an active transmission with a radio ID
+            srcaddr = extra.get('srcaddr')
+            active_transmission = extra.get('active') and srcaddr is not None
             
-            if tgid:
-                # Get department name if available
-                department = "Unknown"
+            if active_transmission and tgid:
+                # ACTIVE TRANSMISSION - Show 3-line format
+                
+                # Line 1: SYSTEM (truncated to fit)
+                system_text = system[:20] if system else "UNKNOWN SYSTEM"
+                self.oled.text(system_text, 0, 0, 1)
+                
+                # Line 2: TALKGROUP (get full description with scrolling)
+                talkgroup_text = f"TG {tgid}"
                 if self.talkgroup_manager:
-                    dept_info = self.talkgroup_manager.get_department(tgid)
-                    if dept_info:
-                        department = dept_info[:12]  # Truncate for OLED
+                    tg_info = self.talkgroup_manager.lookup(tgid)
+                    if tg_info and tg_info.get('description'):
+                        # Use full description with scrolling
+                        full_desc = tg_info['description']
+                        talkgroup_text = self._get_scrolling_text(full_desc, 20)
+                    elif tg_info and tg_info.get('department'):
+                        dept_text = f"{tg_info['department']} {tgid}"
+                        talkgroup_text = self._get_scrolling_text(dept_text, 20)
+                        
+                self.oled.text(talkgroup_text, 0, 10, 1)
                 
-                # Show transmission status
-                if extra.get('active'):
-                    status_char = "*" if not extra.get('encrypted') else "E"
-                    self.oled.text(f"{status_char}TG:{tgid} {department}", 0, 10, 1)
-                else:
-                    self.oled.text(f"TG:{tgid} {department}", 0, 10, 1)
+                # Line 3: RADIO ID
+                radio_text = f"RADIO {srcaddr}"
+                self.oled.text(radio_text, 0, 20, 1)
                 
-                if freq:
-                    self.oled.text(f"{freq:.4f} MHz", 0, 20, 1)
+                # Lines 4-6: Reserved for future dual SDR setup
+                # (Currently empty but available)
+                
             else:
-                self.oled.text("Scanning...", 0, 10, 1)
+                # NO ACTIVE TRANSMISSION - Show scanning status
                 
-            # Show connection and activity status
-            if system != "Offline":
-                if extra.get('active'):
-                    status = "ACTIVE"
-                elif extra.get('last_activity'):
-                    status = f"IDLE {extra.get('last_activity')}s"
+                # Line 1: System name
+                system_text = system[:20] if system else "SCANNER"
+                self.oled.text(system_text, 0, 0, 1)
+                
+                # Line 2: Scanning status with scrolling
+                if tgid:
+                    if self.talkgroup_manager:
+                        tg_info = self.talkgroup_manager.lookup(tgid)
+                        if tg_info and tg_info.get('description'):
+                            last_tg = tg_info['description']
+                        else:
+                            last_tg = f"TG {tgid}"
+                    else:
+                        last_tg = f"TG {tgid}"
+                    
+                    # Add "LAST: " prefix and use scrolling
+                    last_text = f"LAST: {last_tg}"
+                    scrolled_last = self._get_scrolling_text(last_text, 20)
+                    self.oled.text(scrolled_last, 0, 10, 1)
                 else:
-                    status = "ONLINE"
-            else:
-                status = "OFFLINE"
-            self.oled.text(status, 0, 30, 1)
+                    self.oled.text("SCANNING...", 0, 10, 1)
+                
+                # Line 3: Connection status
+                if system != "Offline":
+                    if extra.get('last_activity'):
+                        status = f"IDLE {extra.get('last_activity')}s"
+                    else:
+                        status = "MONITORING"
+                else:
+                    status = "OFFLINE"
+                self.oled.text(status, 0, 20, 1)
             
             self.oled.show()
         except Exception as e:

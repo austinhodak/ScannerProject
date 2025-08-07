@@ -53,6 +53,21 @@ class OP25Manager:
             pass
         return None
         
+    def _find_all_op25_processes(self):
+        """Find ALL existing OP25 processes by name"""
+        processes = []
+        try:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                if proc.info['name'] and 'rx.py' in proc.info['name']:
+                    processes.append(proc)
+                elif proc.info['cmdline']:
+                    cmdline = ' '.join(proc.info['cmdline'])
+                    if 'rx.py' in cmdline or 'op25' in cmdline.lower():
+                        processes.append(proc)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        return processes
+        
     def get_status(self):
         """Get detailed status of OP25 process"""
         proc = self._find_op25_process()
@@ -180,29 +195,32 @@ class OP25Manager:
             except Exception as e:
                 logging.error(f"Error stopping OP25 process: {e}")
                 
-        # Stop any other OP25 processes
-        proc = self._find_op25_process()
-        if proc:
-            try:
-                if force:
-                    proc.kill()
-                else:
-                    proc.terminate()
-                    
-                proc.wait(timeout=10)
-                logging.info(f"Stopped OP25 process PID {proc.pid}")
-                stopped = True
-                
-            except (psutil.TimeoutExpired, psutil.NoSuchProcess):
-                if not force:
-                    try:
+        # Stop ALL other OP25 processes
+        all_procs = self._find_all_op25_processes()
+        if all_procs:
+            logging.info(f"Found {len(all_procs)} OP25 processes to stop")
+            for proc in all_procs:
+                try:
+                    if force:
                         proc.kill()
-                        proc.wait(timeout=5)
-                        stopped = True
-                    except:
-                        pass
-            except Exception as e:
-                logging.error(f"Error stopping OP25: {e}")
+                    else:
+                        proc.terminate()
+                        
+                    proc.wait(timeout=10)
+                    logging.info(f"Stopped OP25 process PID {proc.pid}")
+                    stopped = True
+                    
+                except (psutil.TimeoutExpired, psutil.NoSuchProcess):
+                    if not force:
+                        try:
+                            proc.kill()
+                            proc.wait(timeout=5)
+                            logging.info(f"Force-killed OP25 process PID {proc.pid}")
+                            stopped = True
+                        except:
+                            pass
+                except Exception as e:
+                    logging.error(f"Error stopping OP25 process {proc.pid}: {e}")
                 
         # Stop monitoring
         if self.monitoring_thread:
@@ -351,6 +369,25 @@ class OP25Manager:
     def cleanup(self):
         """Clean up resources"""
         self.stop()
+        
+    def kill_all_op25_processes(self):
+        """Emergency method to kill ALL OP25 processes on the system"""
+        all_procs = self._find_all_op25_processes()
+        killed_count = 0
+        
+        if all_procs:
+            logging.warning(f"Found {len(all_procs)} OP25 processes to kill")
+            for proc in all_procs:
+                try:
+                    proc.kill()
+                    proc.wait(timeout=5)
+                    logging.info(f"Killed OP25 process PID {proc.pid}")
+                    killed_count += 1
+                except Exception as e:
+                    logging.error(f"Failed to kill OP25 process {proc.pid}: {e}")
+        
+        logging.info(f"Killed {killed_count} OP25 processes")
+        return killed_count
         
     def __del__(self):
         """Destructor"""
