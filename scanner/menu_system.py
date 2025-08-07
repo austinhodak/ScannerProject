@@ -98,9 +98,9 @@ class MenuSystem:
         
     def _handle_selection(self):
         """Handle menu item selection"""
-            selected = self.current_menu()[self.current_index]
+        selected = self.current_menu()[self.current_index]
 
-            if selected == "Back":
+        if selected == "Back":
             self._handle_back()
         elif selected == "Exit Menu":
             self.exit_menu()
@@ -117,11 +117,11 @@ class MenuSystem:
             
     def _handle_back(self):
         """Handle back button press"""
-                if len(self.menu_stack) > 1:
-                    self.menu_stack.pop()
-                    self.current_index = 0
-                else:
-                    self.exit_menu()
+        if len(self.menu_stack) > 1:
+            self.menu_stack.pop()
+            self.current_index = 0
+        else:
+            self.exit_menu()
 
     def _adjust_value(self, setting):
         """Adjust a setting value"""
@@ -415,7 +415,7 @@ class MenuSystem:
         else:
             # Fallback to basic OLED rendering
             if hasattr(self.display, 'oled') and self.display.oled_available:
-        self.display.oled.fill(0)
+                self.display.oled.fill(0)
                 
                 # Show menu title
                 title = self.menu_stack[-1]
@@ -438,7 +438,7 @@ class MenuSystem:
                             val_str = str(val)
                         text = f"{prefix}{item}: {val_str}"
                     else:
-            text = f"{prefix}{item}"
+                        text = f"{prefix}{item}"
                     
                     self.display.oled.text(text[:21], 0, (i + 1) * 10, 1)
                 
