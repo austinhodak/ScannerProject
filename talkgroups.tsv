@@ -1,15 +1,28 @@
 TGID	Department	Description	Priority
-1	Police	Police Dispatch	High
-2	Fire	Fire Dispatch	High
-3	EMS	Emergency Medical	High
-4	Public Works	Public Works	Medium
-5	Transit	Public Transit	Low
-6	Parks	Parks & Recreation	Low
-7	Utilities	Water/Electric	Medium
-8	Sheriff	County Sheriff	High
-9	State Police	State Police	High
-10	Emergency Mgmt	Emergency Management	High
-100	Tactical 1	Police Tactical	High
-101	Tactical 2	Fire Tactical	High
-200	Maintenance	System Maintenance	Low
-999	Test	Test Channel	Low
+101	Fire	EFD Dispatch Erie City Fire Dispatch	High
+102	Fire	EFD Tac 1 Erie City Fire Tac 1	High
+103	Fire	EFD Tac 2 Erie City Fire Tac 2	High
+104	Fire	Millcrk Fire Dsp Millcreek Fire Dispatch	High
+105	Fire	Millck Fire Tac1 Millcreek Fire Tac 1	High
+106	Fire	Millck Fire Tac2 Millcreek Fire Tac 2	High
+107	Fire	Millck Fire Tac3 Millcreek Fire Tac 3	High
+108	Fire	Millck Fire Tac4 Millcreek Fire Tac 4	High
+109	Fire	Co Fire East Dsp County Fire East Dispatch	High
+110	Fire	Co FD East Tac 1 County Fire East Tac 1	High
+111	Fire	Co FD East Tac 2 County Fire East Tac 2	High
+112	Fire	Co FD East Tac 3 County Fire East Tac 3	High
+113	Fire	Co FD East Tac 4 County Fire East Tac 4	High
+114	Fire	Co Fire South Dp County Fire South Dispatch	High
+115	Fire	Co FD South Tac1 County Fire South Tac 1	High
+116	Fire	Co FD South Tac2 County Fire South Tac 2	High
+117	Fire	Co FD South Tac3 County Fire South Tac 3	High
+118	Fire	Co FD South Tac4 County Fire South Tac 4	High
+119	Fire	Co FD West Dsp County Fire West Dispatch	High
+120	Fire	Co FD West Tac 1 County Fire West Tac 1	High
+121	Fire	Co FD West Tac 2 County Fire West Tac 2	High
+122	Fire	Co FD West Tac 3 County Fire West Tac 3	High
+123	Fire	Co FD West Tac 4 County Fire West Tac 4	High
+124	Fire	Co Fire Interag Fire Interagency	High
+305	EMS	Emergycare Dsp Emergycare Dispatch	High
+306	EMS	Emergycare Ops Emergycare Operations	High
+307	EMS	Emergycare Tac Emergycare Tac	High
