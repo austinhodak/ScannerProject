@@ -17,17 +17,71 @@ class TalkgroupManager:
             
         try:
             with open(self.filepath, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f, delimiter='\t')
+                reader = csv.reader(f, delimiter='\t')
+                headers = next(reader, None)
+                # Flexible format detection:
+                # - Minimal: TGID \t Name
+                # - Extended: TGID \t Department \t Description \t Priority \t Type
+                has_header = False
+                if headers and any(h.upper() in ("TGID", "NAME", "DEPARTMENT") for h in headers):
+                    has_header = True
+                else:
+                    # If first row looks numeric TGID, treat it as data
+                    if headers is not None:
+                        try:
+                            int(headers[0])
+                        except Exception:
+                            has_header = True
+                        else:
+                            # push back the first line as data
+                            f.seek(0)
+                            reader = csv.reader(f, delimiter='\t')
+
                 for row in reader:
+                    if not row or len(row) == 0:
+                        continue
                     try:
-                        tgid = int(row['TGID'])
-                        self.talkgroups[tgid] = {
-                            'department': row.get('Department', 'Unknown'),
-                            'description': row.get('Description', ''),
-                            'priority': row.get('Priority', 'Medium')
-                        }
-                    except (ValueError, KeyError) as e:
-                        logging.warning(f"Invalid talkgroup entry: {row}, error: {e}")
+                        tgid = int(row[0])
+                    except Exception as e:
+                        logging.warning(f"Invalid TGID row: {row}")
+                        continue
+
+                    # Defaults
+                    name = ''
+                    department = 'Unknown'
+                    description = ''
+                    priority = 'Medium'
+                    tg_type = ''
+
+                    if has_header and headers:
+                        # Map by header names if present
+                        # Re-read as DictReader for this line for safety
+                        # Simpler: build a dict manually
+                        row_dict = {headers[i]: row[i] for i in range(min(len(headers), len(row)))}
+                        name = row_dict.get('Name') or row_dict.get('Description') or ''
+                        department = row_dict.get('Department', department)
+                        description = row_dict.get('Description', name)
+                        priority = row_dict.get('Priority', priority)
+                        tg_type = row_dict.get('Type', tg_type)
+                    else:
+                        # Positional minimal format
+                        if len(row) >= 2:
+                            name = row[1]
+                            description = name
+                        if len(row) >= 3:
+                            department = row[2]
+                        if len(row) >= 4:
+                            priority = row[3]
+                        if len(row) >= 5:
+                            tg_type = row[4]
+
+                    self.talkgroups[tgid] = {
+                        'department': department,
+                        'description': description,
+                        'priority': priority,
+                        'type': tg_type,
+                        'name': name,
+                    }
                         
             logging.info(f"Loaded {len(self.talkgroups)} talkgroups")
             
@@ -87,14 +141,15 @@ class TalkgroupManager:
         try:
             with open(self.filepath, 'w', encoding='utf-8', newline='') as f:
                 writer = csv.writer(f, delimiter='\t')
-                writer.writerow(['TGID', 'Department', 'Description', 'Priority'])
-                
+                writer.writerow(['TGID', 'Name', 'Department', 'Description', 'Priority', 'Type'])
                 for tgid, info in sorted(self.talkgroups.items()):
                     writer.writerow([
                         tgid,
-                        info['department'],
-                        info['description'],
-                        info['priority']
+                        info.get('name', ''),
+                        info.get('department', ''),
+                        info.get('description', ''),
+                        info.get('priority', ''),
+                        info.get('type', ''),
                     ])
                     
         except Exception as e:

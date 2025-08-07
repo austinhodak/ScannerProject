@@ -1,28 +1,90 @@
-TGID	Department	Description	Priority
-101	Fire	EFD Dispatch Erie City Fire Dispatch	High
-102	Fire	EFD Tac 1 Erie City Fire Tac 1	High
-103	Fire	EFD Tac 2 Erie City Fire Tac 2	High
-104	Fire	Millcrk Fire Dsp Millcreek Fire Dispatch	High
-105	Fire	Millck Fire Tac1 Millcreek Fire Tac 1	High
-106	Fire	Millck Fire Tac2 Millcreek Fire Tac 2	High
-107	Fire	Millck Fire Tac3 Millcreek Fire Tac 3	High
-108	Fire	Millck Fire Tac4 Millcreek Fire Tac 4	High
-109	Fire	Co Fire East Dsp County Fire East Dispatch	High
-110	Fire	Co FD East Tac 1 County Fire East Tac 1	High
-111	Fire	Co FD East Tac 2 County Fire East Tac 2	High
-112	Fire	Co FD East Tac 3 County Fire East Tac 3	High
-113	Fire	Co FD East Tac 4 County Fire East Tac 4	High
-114	Fire	Co Fire South Dp County Fire South Dispatch	High
-115	Fire	Co FD South Tac1 County Fire South Tac 1	High
-116	Fire	Co FD South Tac2 County Fire South Tac 2	High
-117	Fire	Co FD South Tac3 County Fire South Tac 3	High
-118	Fire	Co FD South Tac4 County Fire South Tac 4	High
-119	Fire	Co FD West Dsp County Fire West Dispatch	High
-120	Fire	Co FD West Tac 1 County Fire West Tac 1	High
-121	Fire	Co FD West Tac 2 County Fire West Tac 2	High
-122	Fire	Co FD West Tac 3 County Fire West Tac 3	High
-123	Fire	Co FD West Tac 4 County Fire West Tac 4	High
-124	Fire	Co Fire Interag Fire Interagency	High
-305	EMS	Emergycare Dsp Emergycare Dispatch	High
-306	EMS	Emergycare Ops Emergycare Operations	High
-307	EMS	Emergycare Tac Emergycare Tac	High
+# TGID   Name
+101      Erie City Fire Dispatch
+102      Erie City Fire Tac 1
+103      Erie City Fire Tac 2
+104      Millcreek Fire Dispatch
+105      Millcreek Fire Tac 1
+106      Millcreek Fire Tac 2
+107      Millcreek Fire Tac 3
+108      Millcreek Fire Tac 4
+109      County Fire East Dispatch
+110      County Fire East Tac 1
+111      County Fire East Tac 2
+112      County Fire East Tac 3
+113      County Fire East Tac 4
+114      County Fire South Dispatch
+115      County Fire South Tac 1
+116      County Fire South Tac 2
+117      County Fire South Tac 3
+118      County Fire South Tac 4
+119      County Fire West Dispatch
+120      County Fire West Tac 1
+121      County Fire West Tac 2
+122      County Fire West Tac 3
+123      County Fire West Tac 4
+124      County Fire Interagency
+125      Erie International Airport Ops
+201      Erie City Police
+202      Erie City Police Tac 1
+203      Erie City Police Tac 2
+204      Erie City Police Tac 3
+205      Erie City Police Tac 4
+207      Erie County Sheriff
+208      Erie County Sheriff Tac 1
+209      Millcreek Twp Police
+210      Millcreek Twp Police Tac 1
+211      Millcreek Twp Police Tac 2
+212      Millcreek Special 1
+213      Millcreek Special 2
+214      East County Police Dispatch
+215      East County Police Tac 1
+216      East County Police Tac 2
+217      East Special 1
+218      East Special 2
+219      South County Police Dispatch
+220      South County Police Tac 1
+221      South County Police Tac 2
+222      South Special 1
+223      South Special 2
+224      West County Police Dispatch
+225      West County Police Tac 1
+226      West County Police Tac 2
+227      West Special 1
+228      West Special 2
+229      Mercyhurst Univ Police
+230      Gannon Univ Police
+231      Erie Special 1
+232      Erie Special 2
+233      Penn State Behrend Police Dispatch
+234      Edinboro University Police
+235      Police Interagency
+236      Erie County Prison
+301      UPMC Hamot Hospital
+302      St. Vincent Hospital
+303      Millcreek Community Hospital
+304      Corry Memorial Hospital
+305      Emergycare Dispatch
+306      Emergycare Operations
+307      Emergycare Tac
+401      Radio Maintenance
+402      Radio Maintenance Tac 1
+403      Emergency Management
+404      Emergency Mgmt Tac 1
+405      Hazmat
+406      Hazmat Tac 1
+407      Countywide Special 1
+408      Countywide Special 2
+409      Countywide Interagency
+500      Conneaut OH Fire
+501      Conneaut OH Police
+502      Monroe Twp OH Fire
+503      Crawford Co Govt West
+504      Crawford Co Govt North
+506      Chautauqua County NY
+1        Radio Testing 1
+2        Radio Testing 2
+3        Radio Testing 3
+4        Radio Testing 4
+6        Radio Testing 6
+7        Radio Testing 7
+8        Radio Testing 8
