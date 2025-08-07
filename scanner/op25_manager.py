@@ -177,17 +177,12 @@ class OP25Manager:
             env = os.environ.copy()
             env['PYTHONPATH'] = self.op25_path + ':' + env.get('PYTHONPATH', '')
             
-            # Unbuffered Python (-u) and text mode with line buffering; merge stderr to stdout
+            # Inherit parent's stdout/stderr so multi_rx logs print directly to terminal
+            # No pipes, no background reader threads – lowest overhead, avoids freezes
             self.process = subprocess.Popen(
-                ["python3", "-u"] + cmd[1:],
+                cmd,
                 cwd=cwd,
                 env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding="utf-8",
-                errors="ignore",
-                bufsize=1,
                 preexec_fn=os.setsid  # Create new process group
             )
             
@@ -361,11 +356,8 @@ class OP25Manager:
         self.monitoring_thread = Thread(target=self._monitor_process, daemon=True)
         self.monitoring_thread.start()
         
-        # Start log monitoring thread (stdout -> terminal only)
-        if self.process and self.process.stdout:
-            self.log_thread = Thread(target=self._log_monitor_thread, daemon=True)
-            self.log_thread.start()
-            print("\033[92m[Scanner] Multi_rx log monitoring started\033[0m")
+        # When inheriting stdout/stderr, there's no need for a log thread
+        print("\033[92m[Scanner] Multi_rx logs printing directly to terminal\033[0m")
         
     def _monitor_process(self):
         """Monitor OP25 process health"""
