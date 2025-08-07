@@ -21,6 +21,43 @@ class OP25Client:
         self.last_valid_data = None
         self.data_timeout = timedelta(seconds=30)
 
+    def _merge_state(self, new_state, old_state):
+        """Merge parsed state with last valid state to prevent UI flicker when
+        fields are intermittently missing (e.g., empty/partial updates).
+        new_state/old_state are tuples: (system, freq, tgid, extra)
+        Returns merged tuple.
+        """
+        if not old_state:
+            return new_state
+
+        new_system, new_freq, new_tgid, new_extra = new_state
+        old_system, old_freq, old_tgid, old_extra = old_state
+
+        # Merge extras: keep old values if new ones are missing
+        merged_extra = dict(old_extra or {})
+        merged_extra.update(new_extra or {})
+
+        # Prefer keeping last known sysid/signal metrics if absent in new
+        for key in ("sysid", "signal_quality", "signal_locked", "wacn", "nac", "rxchan", "txchan"):
+            if key not in (new_extra or {}) and key in (old_extra or {}):
+                merged_extra[key] = old_extra[key]
+
+        # System name merging
+        merged_system = new_system
+        if self.prefer_op25_name:
+            # If OP25 name missing/empty, keep previous
+            if not merged_system or merged_system == "Unknown":
+                merged_system = old_system or self.system_name
+        else:
+            # Always use configured system name
+            merged_system = self.system_name
+
+        # Frequency/TGID: keep last known if new missing (no active update)
+        merged_freq = new_freq if new_freq else old_freq
+        merged_tgid = new_tgid if new_tgid else old_tgid
+
+        return (merged_system, merged_freq, merged_tgid, merged_extra)
+
     def run(self):
         """Main loop for OP25 client"""
         logging.info(f"Starting OP25 client connection to {self.base_url}")
@@ -41,10 +78,14 @@ class OP25Client:
                     parsed_data = self.parse(data)
                     
                     if parsed_data is not None:
-                        # We got valid data - update our state
-                        self.latest_data = parsed_data
+                        # We got valid data - merge with last_valid to prevent flicker
+                        if self.last_valid_data:
+                            merged = self._merge_state(parsed_data, self.last_valid_data)
+                        else:
+                            merged = parsed_data
+                        self.latest_data = merged
                         self.last_update = datetime.now()
-                        self.last_valid_data = parsed_data
+                        self.last_valid_data = merged
                         self.connection_errors = 0
                     else:
                         # Empty/invalid response - maintain current state
