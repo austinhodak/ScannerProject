@@ -17,41 +17,30 @@ class TalkgroupManager:
             
         try:
             with open(self.filepath, 'r', encoding='utf-8') as f:
-                reader = csv.reader(f, delimiter='\t')
-                headers = next(reader, None)
-                # Flexible format detection:
-                # - Minimal: TGID \t Name
-                # - Extended: TGID \t Department \t Description \t Priority \t Type
-                has_header = False
-                if headers and any(h.upper() in ("TGID", "NAME", "DEPARTMENT") for h in headers):
-                    has_header = True
-                else:
-                    # If first row looks numeric TGID, treat it as data
-                    if headers is not None:
-                        try:
-                            int(headers[0])
-                        except Exception:
-                            has_header = True
-                        else:
-                            # push back the first line as data
-                            f.seek(0)
-                            reader = csv.reader(f, delimiter='\t')
+                for raw_line in f:
+                    line = raw_line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    # If the line has tabs, treat as TSV; otherwise, support space-separated minimal format
+                    if '\t' in line:
+                        parts = [c.strip() for c in line.split('\t')]
+                    else:
+                        # Minimal format: first token is TGID, remainder is Name
+                        # Split on any whitespace; keep remainder intact
+                        parts_all = line.split()
+                        if len(parts_all) < 2:
+                            continue
+                        tgid_str = parts_all[0]
+                        name_rest = line[len(tgid_str):].strip()
+                        parts = [tgid_str, name_rest]
 
-                for row in reader:
-                    if not row:
-                        continue
-                    # Trim whitespace on all fields
-                    row = [ (c.strip() if isinstance(c, str) else c) for c in row ]
-                    if len(row) == 0 or row[0] is None:
-                        continue
-                    first = str(row[0]).strip()
-                    # Skip comments/blank/header-like rows
-                    if not first or first.startswith('#') or first.lower() == 'tgid':
+                    # Skip header-like lines
+                    if parts[0].lower() == 'tgid':
                         continue
                     try:
-                        tgid = int(first)
+                        tgid = int(parts[0])
                     except Exception:
-                        logging.debug(f"Skipping non-numeric TGID row: {row}")
+                        logging.debug(f"Skipping non-numeric TGID row: {parts}")
                         continue
 
                     # Defaults
@@ -61,27 +50,15 @@ class TalkgroupManager:
                     priority = 'Medium'
                     tg_type = ''
 
-                    if has_header and headers:
-                        # Map by header names if present
-                        # Re-read as DictReader for this line for safety
-                        # Simpler: build a dict manually
-                        row_dict = {headers[i]: row[i] for i in range(min(len(headers), len(row)))}
-                        name = row_dict.get('Name') or row_dict.get('Description') or ''
-                        department = row_dict.get('Department', department)
-                        description = row_dict.get('Description', name)
-                        priority = row_dict.get('Priority', priority)
-                        tg_type = row_dict.get('Type', tg_type)
-                    else:
-                        # Positional minimal format
-                        if len(row) >= 2:
-                            name = row[1]
-                            description = name
-                        if len(row) >= 3:
-                            department = row[2]
-                        if len(row) >= 4:
-                            priority = row[3]
-                        if len(row) >= 5:
-                            tg_type = row[4]
+                    if len(parts) >= 2:
+                        name = parts[1]
+                        description = name
+                    if len(parts) >= 3:
+                        department = parts[2]
+                    if len(parts) >= 4:
+                        priority = parts[3]
+                    if len(parts) >= 5:
+                        tg_type = parts[4]
 
                     self.talkgroups[tgid] = {
                         'department': department,

@@ -405,13 +405,13 @@ class DisplayManager:
                 talkgroup_text = f"TG {tgid}"
                 if self.talkgroup_manager:
                     tg_info = self.talkgroup_manager.lookup(tgid)
-                    if tg_info and tg_info.get('description'):
-                        # Use full description with scrolling
-                        full_desc = tg_info['description']
-                        talkgroup_text = self._get_scrolling_text(full_desc, 20)
-                    elif tg_info and tg_info.get('department'):
-                        dept_text = f"{tg_info['department']} {tgid}"
-                        talkgroup_text = self._get_scrolling_text(dept_text, 20)
+                    if tg_info:
+                        label = tg_info.get('name') or tg_info.get('description')
+                        if label:
+                            talkgroup_text = self._get_scrolling_text(label, 20)
+                        elif tg_info.get('department'):
+                            dept_text = f"{tg_info['department']} {tgid}"
+                            talkgroup_text = self._get_scrolling_text(dept_text, 20)
                         
                 self.oled.text(talkgroup_text, 0, 10, 1)
                 
@@ -433,8 +433,8 @@ class DisplayManager:
                 if tgid:
                     if self.talkgroup_manager:
                         tg_info = self.talkgroup_manager.lookup(tgid)
-                        if tg_info and tg_info.get('description'):
-                            last_tg = tg_info['description']
+                        if tg_info:
+                            last_tg = tg_info.get('name') or tg_info.get('description') or f"TG {tgid}"
                         else:
                             last_tg = f"TG {tgid}"
                     else:
