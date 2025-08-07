@@ -38,12 +38,20 @@ class TalkgroupManager:
                             reader = csv.reader(f, delimiter='\t')
 
                 for row in reader:
-                    if not row or len(row) == 0:
+                    if not row:
+                        continue
+                    # Trim whitespace on all fields
+                    row = [ (c.strip() if isinstance(c, str) else c) for c in row ]
+                    if len(row) == 0 or row[0] is None:
+                        continue
+                    first = str(row[0]).strip()
+                    # Skip comments/blank/header-like rows
+                    if not first or first.startswith('#') or first.lower() == 'tgid':
                         continue
                     try:
-                        tgid = int(row[0])
-                    except Exception as e:
-                        logging.warning(f"Invalid TGID row: {row}")
+                        tgid = int(first)
+                    except Exception:
+                        logging.debug(f"Skipping non-numeric TGID row: {row}")
                         continue
 
                     # Defaults
