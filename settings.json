@@ -44,5 +44,6 @@
         "http:0.0.0.0:8080",
         "-O",
         "pulse"
-    ]
+    ],
+    "system_name": "ERIE COUNTY"
 }

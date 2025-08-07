@@ -5,11 +5,12 @@ import logging
 from datetime import datetime, timedelta
 
 class OP25Client:
-    def __init__(self, host="127.0.0.1", port=8080):
+    def __init__(self, host="127.0.0.1", port=8080, system_name=None):
         self.host = host
         self.port = port
         self.base_url = f"http://{host}:{port}"
-        self.latest_data = ("Unknown", None, None, {})
+        self.system_name = system_name or "SCANNER"  # Default fallback
+        self.latest_data = (self.system_name, None, None, {})
         self.last_update = None
         self.connection_errors = 0
         self.max_errors = 5
@@ -38,18 +39,18 @@ class OP25Client:
                     data = response.json()
                     parsed_data = self.parse(data)
                     
-                    if parsed_data and parsed_data[0] != "Unknown":
+                    if parsed_data is not None:
+                        # We got valid data - update our state
                         self.latest_data = parsed_data
                         self.last_update = datetime.now()
                         self.last_valid_data = parsed_data
                         self.connection_errors = 0
                     else:
-                        # Use last valid data if recent
-                        if (self.last_valid_data and self.last_update and 
-                            datetime.now() - self.last_update < self.data_timeout):
-                            self.latest_data = self.last_valid_data
-                        else:
-                            self.latest_data = ("No Activity", None, None, {})
+                        # Empty/invalid response - maintain current state
+                        # Only fall back to "No Activity" if we haven't had valid data for a while
+                        if (not self.last_valid_data or not self.last_update or 
+                            datetime.now() - self.last_update > self.data_timeout):
+                            self.latest_data = (self.system_name, None, None, {"status": "no_activity"})
                 else:
                     raise requests.RequestException(f"HTTP {response.status_code}")
                     
@@ -109,7 +110,12 @@ class OP25Client:
         """Parse OP25 JSON data into scanner format"""
         if not data or not isinstance(data, list):
             logging.debug("Invalid or empty data received from OP25")
-            return ("Unknown", None, None, {})
+            return None
+        
+        # Check if data array is empty - if so, maintain current state
+        if len(data) == 0:
+            logging.debug("Empty data array received from OP25 - maintaining current state")
+            return None
 
         system = "Unknown"
         freq = None
@@ -182,12 +188,11 @@ class OP25Client:
                         if not isinstance(sys_data, dict):
                             continue
                             
-                        # Extract system name from top_line
+                        # Use consistent system name instead of dynamic system ID
                         top_line = sys_data.get("top_line", "")
                         if top_line and "NAC" in top_line:
-                            # Parse system name from top_line format
-                            # "NAC 0x19 WACN 0xa441 SYSID 0x19 460.025000/465.025000 tsbks 7728"
-                            system = f"System {sys_data.get('sysid', sys_id)}"
+                            # Use the configured system name instead of generating from sysid
+                            system = self.system_name
                             
                         # Get current control channel frequency
                         rxchan = sys_data.get("rxchan")
@@ -239,8 +244,9 @@ class OP25Client:
             # Set defaults if nothing found
             if not system or system == "Unknown":
                 system = extra.get("sysid", "No System")
-                if isinstance(system, int):
-                    system = f"System {system}"
+                # Always use consistent system name instead of dynamic values
+                if isinstance(system, int) or not system or system.startswith("System "):
+                    system = self.system_name
                     
             extra["timestamp"] = datetime.now().isoformat()
             
@@ -252,6 +258,8 @@ class OP25Client:
             logging.error(f"Error parsing OP25 data: {e}")
             import traceback
             logging.debug(traceback.format_exc())
+            # Return None on parse error to maintain current state
+            return None
             
         return system, freq, tgid, extra
         
