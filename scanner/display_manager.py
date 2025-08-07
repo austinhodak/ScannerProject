@@ -15,7 +15,7 @@ class DisplayManager:
         self.image_path = "/tmp/scanner_screen.jpg"
         self.talkgroup_manager = talkgroup_manager
         
-        # Initialize fonts with fallbacks
+        # Initialize fonts with fallbacks (only for TFT display)
         self.font_small = self._load_font(size=12)
         self.font_med = self._load_font(size=16)
         self.font_large = self._load_font(size=24)
@@ -32,16 +32,18 @@ class DisplayManager:
             'low_priority': 'green'
         }
 
-        # Initialize OLED display
+        # Initialize OLED display (simple approach like working code)
         try:
             i2c = busio.I2C(board.SCL, board.SDA)
             self.oled = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c)
             self.oled.fill(0)
             self.oled.show()
             self.oled_available = True
+            logging.info("OLED display initialized successfully")
         except Exception as e:
             logging.warning(f"OLED display not available: {e}")
             self.oled_available = False
+            self.oled = None
             
     def _load_font(self, size=16):
         """Load font with fallbacks"""
@@ -68,7 +70,7 @@ class DisplayManager:
     def update(self, system, freq, tgid, extra, settings):
         self.update_tft(system, freq, tgid, extra, settings)
         if self.oled_available:
-            self.update_oled(system, freq, tgid)
+            self.update_oled(system, freq, tgid, extra)
 
     def update_tft(self, system, freq, tgid, extra, settings):
         """Update TFT display with current scanner information"""
@@ -178,10 +180,13 @@ class DisplayManager:
         except Exception as e:
             logging.error(f"Error updating TFT display: {e}")
 
-    def update_oled(self, system, freq, tgid):
+    def update_oled(self, system, freq, tgid, extra=None):
         """Update OLED display with basic scanner information"""
-        if not self.oled_available:
+        if not self.oled_available or self.oled is None:
             return
+            
+        if extra is None:
+            extra = {}
             
         try:
             self.oled.fill(0)
@@ -228,7 +233,7 @@ class DisplayManager:
 
     def show_menu_on_oled(self, menu_items, selected_index):
         """Display menu on OLED"""
-        if not self.oled_available:
+        if not self.oled_available or self.oled is None:
             return
             
         try:
@@ -254,7 +259,7 @@ class DisplayManager:
             if os.path.exists("/dev/fb1"):
                 os.system("sudo fbi -T 1 -d /dev/fb1 -noverbose -a /dev/null > /dev/null 2>&1")
             
-            if self.oled_available:
+            if self.oled_available and self.oled is not None:
                 self.oled.fill(0)
                 self.oled.show()
         except Exception as e:
@@ -276,7 +281,7 @@ class DisplayManager:
                 os.system(f"sudo fbi -T 1 -d /dev/fb1 -noverbose -a {self.image_path} > /dev/null 2>&1")
             
             # OLED message
-            if self.oled_available:
+            if self.oled_available and self.oled is not None:
                 self.oled.fill(0)
                 self.oled.text(title[:21], 0, 10, 1)
                 self.oled.text(message[:21], 0, 30, 1)

@@ -414,7 +414,9 @@ class MenuSystem:
             self.display.show_menu_on_oled(menu_items, self.current_index)
         else:
             # Fallback to basic OLED rendering
-            if hasattr(self.display, 'oled') and self.display.oled_available:
+            if (hasattr(self.display, 'oled') and 
+                self.display.oled_available and 
+                self.display.oled is not None):
                 self.display.oled.fill(0)
                 
                 # Show menu title
