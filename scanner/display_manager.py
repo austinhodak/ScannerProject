@@ -59,7 +59,7 @@ class DisplayManager:
             self.oled = None
     
     def _format_signal_bars(self, extra) -> str:
-        """Return signal bars like |||| based on signal_quality only (true strength)."""
+        """Return signal bars like |||| using signal_quality in range [0, 1]."""
         quality = extra.get('signal_quality', None)
         if quality is None:
             bars = 0
@@ -68,16 +68,19 @@ class DisplayManager:
                 q = float(quality)
             except Exception:
                 q = 0.0
-            # Normalize magnitude; use absolute value since sign differs by backend
-            q = abs(q)
-            # Thresholds can be tuned; map to 0..4 bars
-            if q >= 0.03:
+            # Clamp to [0,1]
+            if q < 0.0:
+                q = 0.0
+            elif q > 1.0:
+                q = 1.0
+            # Map to 0..4 bars with simple thresholds
+            if q >= 0.80:
                 bars = 4
-            elif q >= 0.02:
+            elif q >= 0.60:
                 bars = 3
-            elif q >= 0.01:
+            elif q >= 0.40:
                 bars = 2
-            elif q >= 0.005:
+            elif q >= 0.20:
                 bars = 1
             else:
                 bars = 0
