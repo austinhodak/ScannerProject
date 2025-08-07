@@ -22,7 +22,6 @@ class OP25Manager:
         self.max_restarts = 5
         self.last_restart_time = 0
         self.restart_cooldown = 30  # 30 seconds between restarts
-        self.pid_file = Path('/tmp/multi_rx.pid')
         
         # OP25 configuration
         self.op25_path = self.settings.get("op25_path", "/home/ahodak/op25/op25/gr-op25_repeater/apps")
@@ -37,27 +36,16 @@ class OP25Manager:
         self.web_port = self.settings.get("op25_web_port", 8080)
         self.web_host = self.settings.get("op25_web_host", "127.0.0.1")
         
-        # Log monitoring
-        self.log_queue = queue.Queue(maxsize=1000)  # Store recent log lines
+        # Terminal log display only (no disk writes)
         self.log_thread = None
-        # Default off to reduce CPU/IO load; can be toggled from menu
-        self.show_logs_in_terminal = False
+        self.show_logs_in_terminal = True  # default ON per user request
         
     def is_running(self):
         """Check if OP25 process is running"""
         # Prefer our managed process handle if available
         if self.process and self.process.poll() is None:
             return True
-        # Fallback to PID file check
-        try:
-            if self.pid_file.exists():
-                pid_text = self.pid_file.read_text().strip()
-                if pid_text.isdigit():
-                    pid = int(pid_text)
-                    return psutil.pid_exists(pid)
-        except Exception:
-            pass
-        # As a last resort, search processes
+        # Fallback: search processes
         return self._find_op25_process() is not None
         
     def _find_op25_process(self):
@@ -95,7 +83,7 @@ class OP25Manager:
         return processes
     
     def _log_monitor_thread(self):
-        """Monitor OP25 process logs and display in terminal"""
+        """Monitor OP25 process logs and display in terminal (stdout only)"""
         if not self.process:
             return
             
@@ -104,62 +92,27 @@ class OP25Manager:
             while self.process and self.process.poll() is None:
                 # Use select to check if data is available (Unix/Linux only)
                 if hasattr(select, 'select'):
-                    ready, _, _ = select.select([self.process.stdout, self.process.stderr], [], [], 0.1)
-                    
+                    ready, _, _ = select.select([self.process.stdout], [], [], 0.1)
                     for stream in ready:
                         line = stream.readline()
-                        if line:
-                            line_str = line.decode('utf-8', errors='ignore').strip()
-                            if line_str:
-                                # Add to queue for retrieval
-                                try:
-                                    self.log_queue.put_nowait(line_str)
-                                except queue.Full:
-                                    # Remove oldest entry if queue is full
-                                    try:
-                                        self.log_queue.get_nowait()
-                                        self.log_queue.put_nowait(line_str)
-                                    except queue.Empty:
-                                        pass
-                                
-                                # Display in terminal if enabled
-                                if self.show_logs_in_terminal:
-                                    # Color code the output
-                                    if stream == self.process.stderr or 'ERROR' in line_str.upper() or 'FAIL' in line_str.upper():
-                                        print(f"\033[91m[multi_rx] {line_str}\033[0m")  # Red for errors
-                                    elif 'WARN' in line_str.upper():
-                                        print(f"\033[93m[multi_rx] {line_str}\033[0m")  # Yellow for warnings
-                                    elif 'trunk' in line_str.lower() or 'tgid' in line_str.lower():
-                                        print(f"\033[92m[multi_rx] {line_str}\033[0m")  # Green for activity
-                                    else:
-                                        print(f"\033[96m[multi_rx] {line_str}\033[0m")  # Cyan for general info
+                        if not line:
+                            continue
+                        # Print raw line to terminal only
+                        if self.show_logs_in_terminal:
+                            print(line.rstrip())
                 else:
-                    # Fallback for systems without select (like Windows)
-                    time.sleep(0.1)
+                    # Fallback: blocking readline with small sleep to reduce CPU
+                    line = self.process.stdout.readline()
+                    if line and self.show_logs_in_terminal:
+                        print(line.rstrip())
+                    time.sleep(0.05)
                     
         except Exception as e:
             logging.debug(f"Log monitor thread error: {e}")
     
     def get_recent_logs(self, count=50):
-        """Get recent log lines from the queue"""
-        logs = []
-        temp_logs = []
-        
-        # Drain the queue
-        while not self.log_queue.empty() and len(temp_logs) < count:
-            try:
-                temp_logs.append(self.log_queue.get_nowait())
-            except queue.Empty:
-                break
-        
-        # Put back the logs we took out (keep most recent)
-        for log in temp_logs[-count:]:
-            try:
-                self.log_queue.put_nowait(log)
-            except queue.Full:
-                break
-                
-        return temp_logs[-count:]
+        """Terminal-only mode: no in-memory buffering, return empty list"""
+        return []
     
     def set_terminal_logging(self, enabled):
         """Enable or disable terminal log display"""
@@ -224,15 +177,18 @@ class OP25Manager:
             env = os.environ.copy()
             env['PYTHONPATH'] = self.op25_path + ':' + env.get('PYTHONPATH', '')
             
-            # Use unbuffered output (-u) to avoid pipe blocking; merge stderr to stdout
+            # Unbuffered Python (-u) and text mode with line buffering; merge stderr to stdout
             self.process = subprocess.Popen(
                 ["python3", "-u"] + cmd[1:],
                 cwd=cwd,
                 env=env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                bufsize=1
-                , preexec_fn=os.setsid  # Create new process group
+                text=True,
+                encoding="utf-8",
+                errors="ignore",
+                bufsize=1,
+                preexec_fn=os.setsid  # Create new process group
             )
             
             # Wait a moment to see if process starts successfully
@@ -405,8 +361,8 @@ class OP25Manager:
         self.monitoring_thread = Thread(target=self._monitor_process, daemon=True)
         self.monitoring_thread.start()
         
-        # Start log monitoring thread (only if terminal logging is enabled)
-        if self.show_logs_in_terminal and self.process and self.process.stdout:
+        # Start log monitoring thread (stdout -> terminal only)
+        if self.process and self.process.stdout:
             self.log_thread = Thread(target=self._log_monitor_thread, daemon=True)
             self.log_thread.start()
             print("\033[92m[Scanner] Multi_rx log monitoring started\033[0m")
