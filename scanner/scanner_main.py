@@ -85,6 +85,7 @@ def main():
             op25.stop()
             op25_manager.cleanup()
             input_mgr.cleanup()
+            display.cleanup()  # Use cleanup() instead of clear() to properly terminate fbi processes
             display.clear()
             
         signal.signal(signal.SIGINT, lambda s, f: signal_handler(s, f, cleanup))

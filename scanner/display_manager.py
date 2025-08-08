@@ -2,6 +2,7 @@
 from PIL import Image, ImageDraw, ImageFont
 import os
 from datetime import datetime
+import mmap
 import time
 import subprocess
 import re
@@ -18,6 +19,7 @@ class DisplayManager:
         self.image_path = "/tmp/scanner_screen.jpg"
         self.talkgroup_manager = talkgroup_manager
         self._last_tft_signature = None
+        self._fbi_process = None  # Track current fbi process
         
         # Initialize fonts with fallbacks (only for TFT display)
         self.font_small = self._load_font(size=12)
@@ -37,6 +39,25 @@ class DisplayManager:
         self._last_tft_push = 0.0
         self._tft_min_interval = 5.0  # default seconds between framebuffer pushes
         self._framebuffer_available = os.path.exists("/dev/fb1")
+        self._fb_mmap = None
+        self._fb_fd = None
+        self._fb_bpp = 2  # bytes per pixel (RGB565)
+        if self._framebuffer_available:
+            try:
+                self._fb_fd = os.open("/dev/fb1", os.O_RDWR)
+                self._fb_mmap = mmap.mmap(self._fb_fd, self.width * self.height * self._fb_bpp,
+                                          mmap.MAP_SHARED, mmap.PROT_WRITE | mmap.PROT_READ)
+                logging.info("Framebuffer /dev/fb1 mapped successfully (direct blit mode)")
+            except Exception as e:
+                logging.warning(f"Failed to mmap /dev/fb1, will use fbi fallback: {e}")
+                try:
+                    if self._fb_mmap:
+                        self._fb_mmap.close()
+                    if self._fb_fd:
+                        os.close(self._fb_fd)
+                except Exception:
+                    pass
+                self._fb_mmap = None
         
         # Color scheme
         self.colors = {
@@ -198,11 +219,50 @@ class DisplayManager:
             self.oled.text(bars[: max(0, (120 - x) // 6)], x, 0, 1)
 
     def _kill_fbi(self):
-        """Kill any stray fbi processes to prevent buildup."""
+        """Kill the current fbi process and any stray ones to prevent buildup."""
         try:
+            # First, kill our tracked process if it exists
+            if self._fbi_process is not None:
+                try:
+                    if self._fbi_process.poll() is None:  # Process is still running
+                        self._fbi_process.terminate()
+                        # Give it a moment to terminate gracefully
+                        try:
+                            self._fbi_process.wait(timeout=0.5)
+                        except subprocess.TimeoutExpired:
+                            # Force kill if it doesn't terminate
+                            self._fbi_process.kill()
+                            self._fbi_process.wait()
+                except Exception as e:
+                    logging.debug(f"Error terminating tracked fbi process: {e}")
+                finally:
+                    self._fbi_process = None
+            
+            # Also clean up any other stray fbi processes (fallback safety)
             subprocess.run(["pkill", "-x", "fbi"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.5)
-        except Exception:
-            pass
+        except Exception as e:
+            logging.debug(f"Error in _kill_fbi: {e}")
+            self._fbi_process = None
+
+    def _start_fbi(self, image_path):
+        """Start a new fbi process, killing the old one first."""
+        try:
+            # Kill any existing fbi process
+            self._kill_fbi()
+            
+            # Start new fbi process with proper process management
+            cmd = ["sudo", "fbi", "-T", "1", "-d", "/dev/fb1", "-noverbose", "-a", "-once", image_path]
+            self._fbi_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                preexec_fn=os.setsid  # Create new process group for easier cleanup
+            )
+            return True
+        except Exception as e:
+            logging.error(f"Error starting fbi process: {e}")
+            self._fbi_process = None
+            return False
             
     def _load_font(self, size=16):
         """Load font with fallbacks"""
@@ -399,18 +459,31 @@ class DisplayManager:
             draw.rectangle((0, self.height - 40, self.width, self.height), fill=self.colors['status'])
             draw.text((10, self.height - 30), status_text, fill=self.colors['text'], font=self.font_med)
 
-            # Save and (optionally) push to framebuffer
-            img.save(self.image_path)
-            
-            if self._framebuffer_available:
+            # Push to framebuffer (prefer direct blit)
+            if self._fb_mmap is not None:
+                try:
+                    # Convert PIL image to RGB565 little-endian and write
+                    rgb = img.convert('RGB')
+                    fb_bytes = rgb.tobytes('raw', 'BGR;16')
+                    if len(fb_bytes) >= self.width * self.height * self._fb_bpp:
+                        self._fb_mmap.seek(0)
+                        self._fb_mmap.write(fb_bytes[:self.width * self.height * self._fb_bpp])
+                        self._last_tft_push = now_ts
+                except Exception as e:
+                    logging.warning(f"Direct blit to framebuffer failed, falling back to fbi: {e}")
+                    # Fallback to fbi
+                    if self._framebuffer_available and (now_ts - self._last_tft_push) >= update_interval:
+                        img.save(self.image_path)
+                        self._last_tft_push = now_ts
+                        self._start_fbi(self.image_path)
+            elif self._framebuffer_available:
                 if now_ts - self._last_tft_push >= update_interval:
+                    img.save(self.image_path)
                     self._last_tft_push = now_ts
-                    # Ensure no old fbi remains
-                    self._kill_fbi()
-                    # Spawn a single fbi process on schedule only
-                    os.system(f"sudo fbi -T 1 -d /dev/fb1 -noverbose -a -once {self.image_path} > /dev/null 2>&1")
+                    self._start_fbi(self.image_path)
             else:
-                logging.debug("Framebuffer /dev/fb1 not available")
+                # No framebuffer; optionally keep a debug image file
+                img.save(self.image_path)
                 
         except Exception as e:
             logging.error(f"Error updating TFT display: {e}")
@@ -523,17 +596,49 @@ class DisplayManager:
         """Clear both displays"""
         try:
             if os.path.exists("/dev/fb1"):
-                self._kill_fbi()
-                os.system("sudo fbi -T 1 -d /dev/fb1 -noverbose -a /dev/null > /dev/null 2>&1")
+                # Clear framebuffer directly if mapped
+                if self._fb_mmap is not None:
+                    try:
+                        self._fb_mmap.seek(0)
+                        self._fb_mmap.write(b"\x00" * (self.width * self.height * self._fb_bpp))
+                    except Exception:
+                        pass
+                else:
+                    self._start_fbi("/dev/null")
             
             if self.oled_available and self.oled is not None:
                 self.oled.fill(0)
                 self.oled.show()
         except Exception as e:
             logging.error(f"Error clearing displays: {e}")
+
+    def cleanup(self):
+        """Clean up resources including any running fbi processes"""
+        try:
+            # Kill any fbi processes
+            self._kill_fbi()
+            
+            # Close framebuffer mapping if open
+            if self._fb_mmap is not None:
+                try:
+                    self._fb_mmap.close()
+                    self._fb_mmap = None
+                except Exception:
+                    pass
+                    
+            if self._fb_fd is not None:
+                try:
+                    os.close(self._fb_fd)
+                    self._fb_fd = None
+                except Exception:
+                    pass
+                    
+        except Exception as e:
+            logging.error(f"Error in DisplayManager cleanup: {e}")
             
     def show_message(self, title, message, duration=3):
         """Show a temporary message on both displays"""
+        # Note: duration parameter reserved for future use
         try:
             # TFT message
             img = Image.new('RGB', (self.width, self.height), color=self.colors['background'])
@@ -545,7 +650,7 @@ class DisplayManager:
             
             img.save(self.image_path)
             if os.path.exists("/dev/fb1"):
-                os.system(f"sudo fbi -T 1 -d /dev/fb1 -noverbose -a {self.image_path} > /dev/null 2>&1")
+                self._start_fbi(self.image_path)
             
             # OLED message
             if self.oled_available and self.oled is not None:
