@@ -33,9 +33,9 @@ class DisplayManager:
         # Volume cache (reduce shell calls)
         self._vol_cache = 0
         self._vol_last_time = 0.0
-        # TFT push throttling
+        # TFT throttling/settings
         self._last_tft_push = 0.0
-        self._tft_min_interval = 1.0  # seconds between framebuffer pushes
+        self._tft_min_interval = 5.0  # default seconds between framebuffer pushes
         self._framebuffer_available = os.path.exists("/dev/fb1")
         
         # Color scheme
@@ -196,6 +196,13 @@ class DisplayManager:
         bars = self._format_signal_bars(extra)
         if x < 120:
             self.oled.text(bars[: max(0, (120 - x) // 6)], x, 0, 1)
+
+    def _kill_fbi(self):
+        """Kill any stray fbi processes to prevent buildup."""
+        try:
+            subprocess.run(["pkill", "-x", "fbi"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.5)
+        except Exception:
+            pass
             
     def _load_font(self, size=16):
         """Load font with fallbacks"""
@@ -279,8 +286,13 @@ class DisplayManager:
     def update_tft(self, system, freq, tgid, extra, settings):
         """Update TFT display with current scanner information"""
         try:
-            # Precompute all text content for signature/caching
-            now = datetime.now().strftime("%b%d %H:%M:%S")
+            # Settings to control TFT activity
+            tft_enabled = settings.get('tft_enable', True)
+            if not tft_enabled:
+                return
+            update_interval = float(settings.get('tft_update_interval', self._tft_min_interval))
+
+            # Precompute all text content for signature/caching (exclude time)
             system_text = system[:35] if system else "No System"
 
             # Department/Agency bar
@@ -350,10 +362,11 @@ class DisplayManager:
             if rec_status:
                 status_text += f" | {rec_status}"
 
-            # Build a signature of visible content
-            signature = (now, system_text, dept_text, tag, freq_text, site_info, status_text)
-            if signature == self._last_tft_signature:
-                # No visual changes; skip costly redraw/push
+            # Build a signature of visible content (exclude timestamp so time alone won't trigger)
+            signature = (system_text, dept_text, tag, freq_text, site_info, status_text)
+            now_ts = time.time()
+            if signature == self._last_tft_signature and (now_ts - self._last_tft_push) < update_interval:
+                # No relevant changes and not time for a scheduled refresh
                 return
             self._last_tft_signature = signature
 
@@ -363,7 +376,8 @@ class DisplayManager:
 
             # Header with timestamp
             draw.rectangle((0, 0, self.width, 30), fill=self.colors['background'])
-            draw.text((self.width - 120, 5), now, fill=self.colors['text'], font=self.font_small)
+            now_str = datetime.now().strftime("%b%d %H:%M:%S")
+            draw.text((self.width - 120, 5), now_str, fill=self.colors['text'], font=self.font_small)
             # Connection status indicator
             status_color = self.colors['high_priority'] if system == "Offline" else self.colors['medium_priority']
             draw.rectangle((10, 5, 20, 25), fill=status_color)
@@ -385,15 +399,16 @@ class DisplayManager:
             draw.rectangle((0, self.height - 40, self.width, self.height), fill=self.colors['status'])
             draw.text((10, self.height - 30), status_text, fill=self.colors['text'], font=self.font_med)
 
-            # Save
+            # Save and (optionally) push to framebuffer
             img.save(self.image_path)
             
-            # Throttled framebuffer update to avoid spawning many fbi processes
             if self._framebuffer_available:
-                now = time.time()
-                if now - self._last_tft_push >= self._tft_min_interval:
-                    self._last_tft_push = now
-                    os.system(f"sudo fbi -T 1 -d /dev/fb1 -noverbose -a {self.image_path} > /dev/null 2>&1")
+                if now_ts - self._last_tft_push >= update_interval:
+                    self._last_tft_push = now_ts
+                    # Ensure no old fbi remains
+                    self._kill_fbi()
+                    # Spawn a single fbi process on schedule only
+                    os.system(f"sudo fbi -T 1 -d /dev/fb1 -noverbose -a -once {self.image_path} > /dev/null 2>&1")
             else:
                 logging.debug("Framebuffer /dev/fb1 not available")
                 
@@ -508,6 +523,7 @@ class DisplayManager:
         """Clear both displays"""
         try:
             if os.path.exists("/dev/fb1"):
+                self._kill_fbi()
                 os.system("sudo fbi -T 1 -d /dev/fb1 -noverbose -a /dev/null > /dev/null 2>&1")
             
             if self.oled_available and self.oled is not None:

@@ -12,6 +12,7 @@ import logging
 import signal
 import sys
 import subprocess
+import gc
 
 
 def setup_logging(settings):
@@ -178,6 +179,12 @@ def main():
                             menu.enter_menu()
                             last_menu_check = current_time
                 
+                # Occasional GC to keep memory tidy during long runs
+                if int(time.time()) % 10 == 0:
+                    try:
+                        gc.collect()
+                    except Exception:
+                        pass
                 # Small delay to prevent excessive CPU usage and I/O pressure
                 time.sleep(0.15)
             except Exception as e:
