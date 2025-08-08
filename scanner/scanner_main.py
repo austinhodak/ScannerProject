@@ -63,8 +63,9 @@ def main():
         prefer_op25 = settings.get("prefer_op25_system_name", False)
         op25 = OP25Client(host=op25_host, port=op25_port, system_name=system_name, prefer_op25_name=prefer_op25)
         
-        # Initialize display with talkgroup manager
-        display = DisplayManager(talkgroup_manager=talkgroup_mgr)
+        # Initialize display with talkgroup manager and rotation setting
+        rotation = settings.get("display_rotation", 0)
+        display = DisplayManager(talkgroup_manager=talkgroup_mgr, rotation=rotation)
         
         # Initialize input manager
         input_mgr = InputManager()

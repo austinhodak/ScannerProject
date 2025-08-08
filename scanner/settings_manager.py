@@ -36,7 +36,8 @@ class SettingsManager:
             "op25_web_host": "127.0.0.1",
             "op25_auto_restart": True,
             "op25_auto_start": False,
-            "system_name": "SCANNER"
+            "system_name": "SCANNER",
+            "display_rotation": 0
         }
         self.load()
 

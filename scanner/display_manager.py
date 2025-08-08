@@ -12,7 +12,7 @@ import adafruit_ssd1306
 import logging
 
 class DisplayManager:
-    def __init__(self, talkgroup_manager=None):
+    def __init__(self, talkgroup_manager=None, rotation=0):
         # TFT settings
         self.width = 480
         self.height = 320
@@ -20,6 +20,7 @@ class DisplayManager:
         self.talkgroup_manager = talkgroup_manager
         self._last_tft_signature = None
         self._fbi_process = None  # Track current fbi process
+        self.rotation = rotation if rotation in [0, 90, 180, 270] else 0  # Rotation angle: 0, 90, 180, or 270 degrees
         
         # Initialize fonts with fallbacks (only for TFT display)
         self.font_small = self._load_font(size=12)
@@ -263,6 +264,14 @@ class DisplayManager:
             logging.error(f"Error starting fbi process: {e}")
             self._fbi_process = None
             return False
+
+    def set_rotation(self, angle):
+        """Set display rotation angle (0, 90, 180, or 270 degrees)"""
+        if angle in [0, 90, 180, 270]:
+            self.rotation = angle
+            logging.info(f"Display rotation set to {angle} degrees")
+        else:
+            logging.warning(f"Invalid rotation angle {angle}, must be 0, 90, 180, or 270")
             
     def _load_font(self, size=16):
         """Load font with fallbacks"""
@@ -459,12 +468,35 @@ class DisplayManager:
             draw.rectangle((0, self.height - 40, self.width, self.height), fill=self.colors['status'])
             draw.text((10, self.height - 30), status_text, fill=self.colors['text'], font=self.font_med)
 
+            # Apply rotation if needed
+            if self.rotation != 0:
+                img = img.rotate(-self.rotation, expand=True)  # PIL rotates counter-clockwise, so negate
+                # For rotated images, we may need to resize to fit framebuffer
+                if self.rotation in [90, 270]:
+                    # For 90/270 degree rotations, resize to fit the original framebuffer dimensions
+                    img = img.resize((self.width, self.height))
+
             # Push to framebuffer (prefer direct blit)
             if self._fb_mmap is not None:
                 try:
-                    # Convert PIL image to RGB565 little-endian and write
+                    # Convert PIL image to RGB565 format manually
                     rgb = img.convert('RGB')
-                    fb_bytes = rgb.tobytes('raw', 'BGR;16')
+                    # Ensure image dimensions match framebuffer
+                    if img.size != (self.width, self.height):
+                        rgb = rgb.resize((self.width, self.height))
+                    rgb_data = rgb.tobytes('raw', 'RGB')
+                    
+                    # Convert RGB888 to RGB565 (16-bit) format
+                    fb_bytes = bytearray()
+                    for i in range(0, len(rgb_data), 3):
+                        r = rgb_data[i] >> 3      # 5 bits
+                        g = rgb_data[i+1] >> 2    # 6 bits  
+                        b = rgb_data[i+2] >> 3    # 5 bits
+                        
+                        # Pack into 16-bit RGB565 little-endian
+                        rgb565 = (r << 11) | (g << 5) | b
+                        fb_bytes.extend(rgb565.to_bytes(2, byteorder='little'))
+                    
                     if len(fb_bytes) >= self.width * self.height * self._fb_bpp:
                         self._fb_mmap.seek(0)
                         self._fb_mmap.write(fb_bytes[:self.width * self.height * self._fb_bpp])
@@ -647,6 +679,13 @@ class DisplayManager:
             # Center the message
             draw.text((50, 100), title, fill=self.colors['header'], font=self.font_large)
             draw.text((50, 150), message, fill=self.colors['text'], font=self.font_med)
+            
+            # Apply rotation if needed
+            if self.rotation != 0:
+                img = img.rotate(-self.rotation, expand=True)  # PIL rotates counter-clockwise, so negate
+                # For rotated images, we may need to resize to fit framebuffer
+                if self.rotation in [90, 270]:
+                    img = img.resize((self.width, self.height))
             
             img.save(self.image_path)
             if os.path.exists("/dev/fb1"):
