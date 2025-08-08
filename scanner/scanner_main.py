@@ -178,9 +178,8 @@ def main():
                             menu.enter_menu()
                             last_menu_check = current_time
                 
-                # Small delay to prevent excessive CPU usage
-                time.sleep(0.1)
-                
+                # Small delay to prevent excessive CPU usage and I/O pressure
+                time.sleep(0.15)
             except Exception as e:
                 logging.error(f"Error in main loop: {e}")
                 display.show_message("Error", "System error occurred")

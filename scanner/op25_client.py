@@ -20,6 +20,8 @@ class OP25Client:
         # Data validation
         self.last_valid_data = None
         self.data_timeout = timedelta(seconds=30)
+        # Backoff pulling OP25 API a bit to reduce memory/CPU load
+        self.poll_interval = 0.2  # seconds
 
     def _merge_state(self, new_state, old_state):
         """Merge parsed state with last valid state to prevent UI flicker when
@@ -96,6 +98,8 @@ class OP25Client:
                 else:
                     raise requests.RequestException(f"HTTP {response.status_code}")
                     
+                # Backoff between polls
+                time.sleep(self.poll_interval)
             except requests.exceptions.Timeout:
                 logging.warning("OP25 connection timeout")
                 self._handle_connection_error("Timeout")

@@ -17,6 +17,7 @@ class DisplayManager:
         self.height = 320
         self.image_path = "/tmp/scanner_screen.jpg"
         self.talkgroup_manager = talkgroup_manager
+        self._last_tft_signature = None
         
         # Initialize fonts with fallbacks (only for TFT display)
         self.font_small = self._load_font(size=12)
@@ -32,6 +33,10 @@ class DisplayManager:
         # Volume cache (reduce shell calls)
         self._vol_cache = 0
         self._vol_last_time = 0.0
+        # TFT push throttling
+        self._last_tft_push = 0.0
+        self._tft_min_interval = 1.0  # seconds between framebuffer pushes
+        self._framebuffer_available = os.path.exists("/dev/fb1")
         
         # Color scheme
         self.colors = {
@@ -274,22 +279,9 @@ class DisplayManager:
     def update_tft(self, system, freq, tgid, extra, settings):
         """Update TFT display with current scanner information"""
         try:
-            img = Image.new('RGB', (self.width, self.height), color=self.colors['background'])
-            draw = ImageDraw.Draw(img)
-
-            # Header with timestamp
+            # Precompute all text content for signature/caching
             now = datetime.now().strftime("%b%d %H:%M:%S")
-            draw.rectangle((0, 0, self.width, 30), fill=self.colors['background'])
-            draw.text((self.width - 120, 5), now, fill=self.colors['text'], font=self.font_small)
-            
-            # Connection status indicator
-            status_color = self.colors['high_priority'] if system == "Offline" else self.colors['medium_priority']
-            draw.rectangle((10, 5, 20, 25), fill=status_color)
-
-            # System name bar
-            draw.rectangle((0, 30, self.width, 70), fill=self.colors['header'])
             system_text = system[:35] if system else "No System"
-            draw.text((10, 40), system_text, fill="black", font=self.font_large)
 
             # Department/Agency bar
             department = "Scanning..."
@@ -314,9 +306,7 @@ class DisplayManager:
                 else:
                     department = f"TGID {tgid} - Unknown"
 
-            draw.rectangle((0, 70, self.width, 110), fill=dept_color)
             dept_text = department[:40] if len(department) > 40 else department
-            draw.text((10, 80), dept_text, fill="black", font=self.font_large)
 
             # Talkgroup and frequency info
             if tgid:
@@ -336,10 +326,7 @@ class DisplayManager:
             else:
                 tag = "Scanning..."
                 
-            draw.text((10, 120), tag, fill=self.colors['text'], font=self.font_large)
-
             freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
-            draw.text((10, 155), freq_text, fill=self.colors['text'], font=self.font_med)
 
             # System info
             nac = extra.get('nac', '--')
@@ -349,30 +336,64 @@ class DisplayManager:
             site_info = f"NAC: {nac} | WACN: {wacn} | SYS: {sysid}"
             if extra.get('error'):
                 site_info += f" | ERR: {extra.get('error')}"
-            draw.text((10, 175), site_info, fill=self.colors['text'], font=self.font_med)
             
             # Additional system info
             if settings.get('show_debug'):
                 debug_info = f"Auto: {'ON' if settings.get('auto_scan') else 'OFF'} | "
                 debug_info += f"Priority: {'ON' if settings.get('priority_scan') else 'OFF'}"
-                draw.text((10, 195), debug_info, fill=self.colors['text'], font=self.font_small)
 
             # Status bar
-            draw.rectangle((0, self.height - 40, self.width, self.height), fill=self.colors['status'])
             volume = settings.get('volume_level', 0)
             mute_status = "MUTE" if settings.get('mute') else f"VOL:{volume}"
             rec_status = "REC" if settings.get('recording') else ""
             status_text = f"{mute_status} | SQL:2"
             if rec_status:
                 status_text += f" | {rec_status}"
+
+            # Build a signature of visible content
+            signature = (now, system_text, dept_text, tag, freq_text, site_info, status_text)
+            if signature == self._last_tft_signature:
+                # No visual changes; skip costly redraw/push
+                return
+            self._last_tft_signature = signature
+
+            # Proceed to draw only when content changed
+            img = Image.new('RGB', (self.width, self.height), color=self.colors['background'])
+            draw = ImageDraw.Draw(img)
+
+            # Header with timestamp
+            draw.rectangle((0, 0, self.width, 30), fill=self.colors['background'])
+            draw.text((self.width - 120, 5), now, fill=self.colors['text'], font=self.font_small)
+            # Connection status indicator
+            status_color = self.colors['high_priority'] if system == "Offline" else self.colors['medium_priority']
+            draw.rectangle((10, 5, 20, 25), fill=status_color)
+            # System name bar
+            draw.rectangle((0, 30, self.width, 70), fill=self.colors['header'])
+            draw.text((10, 40), system_text, fill="black", font=self.font_large)
+            # Department/Agency bar
+            draw.rectangle((0, 70, self.width, 110), fill=dept_color)
+            draw.text((10, 80), dept_text, fill="black", font=self.font_large)
+            # Talkgroup/Freq
+            draw.text((10, 120), tag, fill=self.colors['text'], font=self.font_large)
+            draw.text((10, 155), freq_text, fill=self.colors['text'], font=self.font_med)
+            # System info
+            draw.text((10, 175), site_info, fill=self.colors['text'], font=self.font_med)
+            # Debug info
+            if settings.get('show_debug'):
+                draw.text((10, 195), debug_info, fill=self.colors['text'], font=self.font_small)
+            # Status bar
+            draw.rectangle((0, self.height - 40, self.width, self.height), fill=self.colors['status'])
             draw.text((10, self.height - 30), status_text, fill=self.colors['text'], font=self.font_med)
 
-            # Save and display
+            # Save
             img.save(self.image_path)
             
-            # Only try to display on framebuffer if it exists
-            if os.path.exists("/dev/fb1"):
-                os.system(f"sudo fbi -T 1 -d /dev/fb1 -noverbose -a {self.image_path} > /dev/null 2>&1")
+            # Throttled framebuffer update to avoid spawning many fbi processes
+            if self._framebuffer_available:
+                now = time.time()
+                if now - self._last_tft_push >= self._tft_min_interval:
+                    self._last_tft_push = now
+                    os.system(f"sudo fbi -T 1 -d /dev/fb1 -noverbose -a {self.image_path} > /dev/null 2>&1")
             else:
                 logging.debug("Framebuffer /dev/fb1 not available")
                 
