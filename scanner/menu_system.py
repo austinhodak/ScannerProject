@@ -74,10 +74,10 @@ class MenuSystem:
         # Handle encoder navigation
         encoder_delta = buttons.get("encoder_delta", 0)
         if encoder_delta != 0:
-            if encoder_delta > 0:
-                self.current_index = (self.current_index + 1) % len(self.current_menu())
-            else:
-                self.current_index = (self.current_index - 1) % len(self.current_menu())
+            # Scroll multiple items when encoder moves more than one detent between cycles
+            step = 1 if encoder_delta > 0 else -1
+            for _ in range(abs(encoder_delta)):
+                self.current_index = (self.current_index + step) % len(self.current_menu())
 
         # Handle button presses with debouncing
         if buttons.get("confirm") and current_time - self.last_button_time > self.button_repeat_delay:

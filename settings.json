@@ -30,5 +30,7 @@
     "system_name": "ERIE COUNTY",
     "prefer_op25_system_name": true,
     "oled_refresh_rate": 20,
-    "oled_scroll_speed": 0.2
+    "oled_scroll_speed": 0.2,
+    "volume_poll_interval": 0.2,
+    "i2c_frequency_khz": 400
 }

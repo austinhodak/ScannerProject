@@ -40,6 +40,7 @@ class DisplayManager:
         # Volume cache (reduce shell calls)
         self._vol_cache = 0
         self._vol_last_time = 0.0
+        self._vol_poll_interval = 1.0  # seconds between actual system volume polls
         # TFT throttling/settings
         self._last_tft_push = 0.0
         self._tft_min_interval = 5.0  # default seconds between framebuffer pushes
@@ -47,6 +48,8 @@ class DisplayManager:
         self._fb_mmap = None
         self._fb_fd = None
         self._fb_bpp = 2  # bytes per pixel (RGB565)
+        # Skip TFT during rapid user interactions
+        self._skip_tft_until = 0.0
         if self._framebuffer_available:
             try:
                 self._fb_fd = os.open("/dev/fb1", os.O_RDWR)
@@ -78,7 +81,19 @@ class DisplayManager:
 
         # Initialize OLED display (simple approach like working code)
         try:
-            i2c = busio.I2C(board.SCL, board.SDA)
+            # Allow higher I2C frequency for faster OLED refresh (default 400kHz)
+            i2c_frequency_hz = 400_000
+            try:
+                # If SettingsManager is used to pass settings, we may not have it here; keep default
+                # Caller can later adjust via a setter if needed
+                pass
+            except Exception:
+                pass
+            try:
+                i2c = busio.I2C(board.SCL, board.SDA, frequency=i2c_frequency_hz)
+            except TypeError:
+                # Older libraries may not support frequency kwarg
+                i2c = busio.I2C(board.SCL, board.SDA)
             self.oled = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c)
             self.oled.fill(0)
             self.oled.show()
@@ -122,7 +137,8 @@ class DisplayManager:
         Caches for ~1s to avoid frequent shell calls.
         """
         now = time.time()
-        if now - self._vol_last_time < 1.0:
+        # Honor configured poll interval to make on-screen volume feel more responsive
+        if now - self._vol_last_time < float(getattr(self, "_vol_poll_interval", 1.0)):
             return self._vol_cache
         vol = fallback
         # Try PulseAudio (pactl)
@@ -164,6 +180,24 @@ class DisplayManager:
         except Exception:
             fallback = 0
         return self._get_system_volume_percent(fallback)
+
+    def set_volume_hint(self, volume_percent: int):
+        """Provide a recent volume value to avoid slow system queries.
+        This immediately updates the cached value and timestamp.
+        """
+        try:
+            vol = max(0, min(100, int(volume_percent)))
+            self._vol_cache = vol
+            self._vol_last_time = time.time()
+        except Exception:
+            pass
+
+    def request_oled_refresh(self):
+        """Allow next OLED update to proceed immediately (bypass throttle once)."""
+        try:
+            self._last_oled_update = 0.0
+        except Exception:
+            pass
 
     def _format_oled_header(self, extra, settings) -> str:
         """Header: SIDxx Vnn L |||| (no brackets, <= 20 chars)"""
@@ -352,9 +386,12 @@ class DisplayManager:
         return scrolled_text
 
     def update(self, system, freq, tgid, extra, settings):
-        self.update_tft(system, freq, tgid, extra, settings)
+        # Update OLED first for better perceived responsiveness
         if self.oled_available:
             self.update_oled(system, freq, tgid, extra, settings)
+        # Optionally skip TFT updates during rapid user interactions
+        if time.time() >= self._skip_tft_until:
+            self.update_tft(system, freq, tgid, extra, settings)
 
     def update_tft(self, system, freq, tgid, extra, settings):
         """Update TFT display with current scanner information"""
@@ -540,6 +577,11 @@ class DisplayManager:
             
             # Update scroll speed from settings
             self.scroll_delay = settings.get('oled_scroll_speed', 0.2)
+            # Update volume poll interval to make volume number react faster when user turns encoder
+            try:
+                self._vol_poll_interval = float(settings.get('volume_poll_interval', 0.2))
+            except Exception:
+                self._vol_poll_interval = 0.2
         else:
             oled_interval = self._oled_min_interval
             
@@ -673,6 +715,13 @@ class DisplayManager:
                     
         except Exception as e:
             logging.error(f"Error in DisplayManager cleanup: {e}")
+    
+    def skip_tft_for(self, seconds: float):
+        """Temporarily skip TFT updates to keep UI responsive."""
+        try:
+            self._skip_tft_until = max(self._skip_tft_until, time.time() + max(0.0, float(seconds)))
+        except Exception:
+            pass
             
     def show_message(self, title, message, duration=3):
         """Show a temporary message on both displays"""

@@ -173,9 +173,21 @@ def main():
                     enc_delta = buttons.get("encoder_delta", 0)
                     if enc_delta:
                         now = time.time()
-                        # Combine steps into one system call (rate-limit to 10/sec)
+                        adj = abs(enc_delta) * volume_step_percent
+
+                        # Always update UI immediately for smooth feedback
+                        try:
+                            current_vol = settings.get('volume_level', 0)
+                            ui_estimated = max(0, min(100, current_vol + (adj if enc_delta > 0 else -adj)))
+                            settings.set('volume_level', ui_estimated)
+                            display.set_volume_hint(ui_estimated)
+                            display.request_oled_refresh()
+                            display.skip_tft_for(0.2)
+                        except Exception:
+                            pass
+
+                        # Coalesce actual system volume changes (rate-limit to 10/sec)
                         if now - last_volume_adjust_time > 0.05:
-                            adj = abs(enc_delta) * volume_step_percent
                             sign = '+' if enc_delta > 0 else '-'
                             # Try PulseAudio
                             try:
@@ -185,7 +197,6 @@ def main():
                             except Exception:
                                 # Fallback to ALSA
                                 try:
-                                    # amixer expects e.g. 3%+ or 3%- on some versions
                                     subprocess.run([
                                         "amixer", "-q", "set", "Master", f"{adj}%{sign}"
                                     ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.5)
