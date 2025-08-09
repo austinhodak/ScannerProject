@@ -275,9 +275,43 @@ class MenuSystem:
             cpu_percent = psutil.cpu_percent()
             memory = psutil.virtual_memory()
             uptime = datetime.now() - datetime.fromtimestamp(psutil.boot_time())
+            # CPU temperature (best-effort with multiple fallbacks)
+            temp_c = None
+            try:
+                if hasattr(psutil, 'sensors_temperatures'):
+                    temps = psutil.sensors_temperatures(fahrenheit=False) or {}
+                    for key in ('cpu-thermal', 'coretemp', 'soc_thermal', 'cpu_thermal'):
+                        if key in temps and temps[key]:
+                            temp_c = temps[key][0].current
+                            break
+                    if temp_c is None:
+                        for readings in temps.values():
+                            if readings:
+                                temp_c = readings[0].current
+                                break
+            except Exception:
+                pass
+            if temp_c is None:
+                try:
+                    with open('/sys/class/thermal/thermal_zone0/temp', 'r') as f:
+                        temp_c = int(f.read().strip()) / 1000.0
+                except Exception:
+                    pass
+            if temp_c is None:
+                try:
+                    out = subprocess.check_output(['vcgencmd', 'measure_temp'], text=True, timeout=0.5)
+                    # Expected format: temp=48.0'C
+                    if '=' in out:
+                        part = out.split('=')[1]
+                        temp_str = part.split("'")[0]
+                        temp_c = float(temp_str)
+                except Exception:
+                    pass
             
             status = f"CPU: {cpu_percent:.1f}%\n"
             status += f"RAM: {memory.percent:.1f}%\n"
+            if temp_c is not None:
+                status += f"CPU Temp: {temp_c:.1f}°C\n"
             status += f"Uptime: {str(uptime).split('.')[0]}"
             
             self.display.show_message("System Status", status)
