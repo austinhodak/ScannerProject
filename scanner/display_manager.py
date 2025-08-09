@@ -52,6 +52,8 @@ class DisplayManager:
         self._fb_bpp = 2  # bytes per pixel (RGB565)
         # Skip TFT during rapid user interactions
         self._skip_tft_until = 0.0
+        # Volume adjustment mode (UI hint)
+        self._volume_mode_active = False
         if self._framebuffer_available:
             try:
                 self._fb_fd = os.open("/dev/fb1", os.O_RDWR)
@@ -177,7 +179,9 @@ class DisplayManager:
         return vol
 
     def _get_volume_percent(self, settings) -> int:
-        """Return current system volume percentage; fallback to settings volume_level."""
+        """Return current system volume percentage; fallback to settings volume_level.
+        Uses recent UI hint for a short grace window to avoid flicker.
+        """
         fallback = 0
         try:
             if settings is not None:
@@ -243,7 +247,25 @@ class DisplayManager:
         """Draw OLED header: volume on far left, signal fill bar on far right."""
         # Left: Volume
         vol_text = self._format_oled_header(extra, settings)
-        self.oled.text(vol_text[:6], 0, 0, 1)
+        # Draw inverse when in volume adjust mode
+        try:
+            text_px = min(len(vol_text), 6) * 6
+            if self._volume_mode_active:
+                # Filled rect then black text for inverse effect
+                if hasattr(self.oled, 'fill_rect'):
+                    self.oled.fill_rect(0, 0, max(18, text_px + 2), 10, 1)
+                else:
+                    for dx in range(max(18, text_px + 2)):
+                        for dy in range(10):
+                            self.oled.pixel(dx, dy, 1)
+                # Draw text in black
+                if hasattr(self.oled, 'text'):
+                    self.oled.text(vol_text[:6], 0, 0, 0)
+            else:
+                self.oled.text(vol_text[:6], 0, 0, 1)
+        except Exception:
+            # Fallback to normal draw
+            self.oled.text(vol_text[:6], 0, 0, 1)
         left_px_end = min(len(vol_text), 20) * 6
 
         # Right: Signal rectangle fill (progress bar)
@@ -810,3 +832,11 @@ class DisplayManager:
                 
         except Exception as e:
             logging.error(f"Error showing message: {e}")
+
+    def set_volume_mode(self, active: bool):
+        """Enable/disable temporary volume adjustment mode (affects OLED header rendering)."""
+        try:
+            self._volume_mode_active = bool(active)
+            self.request_oled_refresh()
+        except Exception:
+            pass
