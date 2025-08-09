@@ -107,10 +107,21 @@ class InputManager:
         self.running = False
         if self.gpio_available:
             try:
+                # Close encoder first to prevent issues
+                if hasattr(self, 'encoder') and self.encoder:
+                    try:
+                        self.encoder.close()
+                        logging.info("Rotary encoder closed")
+                    except Exception as e:
+                        logging.warning(f"Error closing encoder: {e}")
+                
+                # Clean up GPIO
                 GPIO.cleanup()
                 logging.info("GPIO cleaned up")
             except Exception as e:
                 logging.error(f"Error cleaning up GPIO: {e}")
+            finally:
+                self.gpio_available = False
                 
     def get_input_status(self):
         """Get status of input system"""

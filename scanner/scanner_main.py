@@ -83,11 +83,35 @@ def main():
         # Setup signal handlers for graceful shutdown
         def cleanup():
             logging.info("Cleaning up...")
-            op25.stop()
-            op25_manager.cleanup()
-            input_mgr.cleanup()
-            display.cleanup()  # Use cleanup() instead of clear() to properly terminate fbi processes
-            display.clear()
+            try:
+                # Stop OP25 client first (sets running=False)
+                logging.info("Stopping OP25 client...")
+                op25.stop()
+                
+                # Give threads a moment to see the stop flag
+                time.sleep(0.1)
+                
+                # Clean up OP25 manager (processes and threads)
+                logging.info("Cleaning up OP25 manager...")
+                op25_manager.cleanup()
+                
+                # Clean up input manager and GPIO
+                logging.info("Cleaning up input manager...")
+                input_mgr.cleanup()
+                
+                # Clean up display last
+                logging.info("Cleaning up display...")
+                display.cleanup()
+                display.clear()
+                
+                logging.info("Cleanup completed successfully")
+            except Exception as e:
+                logging.error(f"Error during cleanup: {e}")
+                # Force cleanup if normal cleanup fails
+                try:
+                    op25_manager.kill_all_op25_processes()
+                except:
+                    pass
             
         signal.signal(signal.SIGINT, lambda s, f: signal_handler(s, f, cleanup))
         signal.signal(signal.SIGTERM, lambda s, f: signal_handler(s, f, cleanup))

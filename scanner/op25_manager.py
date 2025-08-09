@@ -298,7 +298,12 @@ class OP25Manager:
         # Stop monitoring
         if self.monitoring_thread:
             self.stop_event.set()
-            self.monitoring_thread.join(timeout=5)
+            try:
+                self.monitoring_thread.join(timeout=5)
+                if self.monitoring_thread.is_alive():
+                    logging.warning("Monitoring thread did not stop within timeout")
+            except Exception as e:
+                logging.warning(f"Error joining monitoring thread: {e}")
             self.monitoring_thread = None
         # Join log thread if running
         if self.log_thread:
