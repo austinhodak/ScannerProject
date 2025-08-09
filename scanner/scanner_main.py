@@ -177,6 +177,7 @@ def main():
 
                         # Always update UI immediately for smooth feedback
                         try:
+                            # Keep a local expected volume that we will eventually reconcile with system
                             current_vol = settings.get('volume_level', 0)
                             ui_estimated = max(0, min(100, current_vol + (adj if enc_delta > 0 else -adj)))
                             settings.set('volume_level', ui_estimated)
@@ -202,6 +203,11 @@ def main():
                                     ], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.5)
                                 except Exception:
                                     pass
+                            # After issuing the actual system change, refresh the OLED but keep hint grace active
+                            try:
+                                display.request_oled_refresh()
+                            except Exception:
+                                pass
                             last_volume_adjust_time = now
                     
                     # Update scanner display

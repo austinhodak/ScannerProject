@@ -41,6 +41,8 @@ class DisplayManager:
         self._vol_cache = 0
         self._vol_last_time = 0.0
         self._vol_poll_interval = 1.0  # seconds between actual system volume polls
+        self._vol_hint_grace = 0.6     # seconds to trust UI hint before polling system
+        self._last_user_volume_change_time = 0.0
         # TFT throttling/settings
         self._last_tft_push = 0.0
         self._tft_min_interval = 5.0  # default seconds between framebuffer pushes
@@ -137,6 +139,9 @@ class DisplayManager:
         Caches for ~1s to avoid frequent shell calls.
         """
         now = time.time()
+        # During recent user volume interaction, trust UI hint to avoid flicker/mismatch
+        if now - getattr(self, "_last_user_volume_change_time", 0.0) < float(getattr(self, "_vol_hint_grace", 0.6)):
+            return self._vol_cache
         # Honor configured poll interval to make on-screen volume feel more responsive
         if now - self._vol_last_time < float(getattr(self, "_vol_poll_interval", 1.0)):
             return self._vol_cache
@@ -189,6 +194,7 @@ class DisplayManager:
             vol = max(0, min(100, int(volume_percent)))
             self._vol_cache = vol
             self._vol_last_time = time.time()
+            self._last_user_volume_change_time = self._vol_last_time
         except Exception:
             pass
 
@@ -200,15 +206,9 @@ class DisplayManager:
             pass
 
     def _format_oled_header(self, extra, settings) -> str:
-        """Header: SIDxx Vnn L |||| (no brackets, <= 20 chars)"""
-        sysid = extra.get('sysid')
-        sid = f"SID {sysid}" if sysid is not None else "SID --"
+        """Header text for OLED left side: just volume (e.g., 'V55')."""
         vol_num = self._get_volume_percent(settings)
-        vol = f"V{vol_num}"
-        lock = "L " if extra.get('signal_locked') else "  "
-        sig = self._format_signal_bars(extra)
-        header = f"{sid} {vol} {lock}{sig}"
-        return header[:20]
+        return f"V{vol_num}"
 
     def _draw_lock_icon(self, x: int, y: int):
         """Draw a tiny 6x8 padlock icon at (x,y) on the OLED (mono)."""
@@ -240,22 +240,63 @@ class DisplayManager:
             pass
 
     def _draw_oled_header(self, extra, settings):
-        """Draw header components with a true icon for lock and text bars."""
-        # Left segment: SID + volume
-        sysid = extra.get('sysid')
-        sid = f"SID {sysid}" if sysid is not None else "SID --"
-        vol_num = self._get_volume_percent(settings)
-        left = f"{sid} V{vol_num} "
-        # Draw left text
-        self.oled.text(left[:20], 0, 0, 1)
-        x = min(len(left), 20) * 6  # approximate 6px per char
-        # Lock/icon and bars
-        if extra.get('signal_locked') and x <= 120 - 8:
-            self._draw_lock_icon(x, 0)
-            x += 8
-        bars = self._format_signal_bars(extra)
-        if x < 120:
-            self.oled.text(bars[: max(0, (120 - x) // 6)], x, 0, 1)
+        """Draw OLED header: volume on far left, signal fill bar on far right."""
+        # Left: Volume
+        vol_text = self._format_oled_header(extra, settings)
+        self.oled.text(vol_text[:6], 0, 0, 1)
+        left_px_end = min(len(vol_text), 20) * 6
+
+        # Right: Signal rectangle fill (progress bar)
+        # Determine signal quality in [0,1]
+        try:
+            quality = float(extra.get('signal_quality', 0.0))
+        except Exception:
+            quality = 0.0
+        if quality < 0.0:
+            quality = 0.0
+        elif quality > 1.0:
+            quality = 1.0
+
+        bar_w = 40  # total width of bar
+        bar_h = 8   # height of bar
+        margin_right = 2
+        x_bar = max(0, 128 - bar_w - margin_right)
+        y_bar = 0
+        self._draw_progress_bar(x_bar, y_bar, bar_w, bar_h, quality)
+
+        # Optional: lock icon just to the left of bar if there's room
+        if extra.get('signal_locked'):
+            x_lock = x_bar - 10
+            if x_lock > left_px_end + 2:
+                self._draw_oled_header_lock_safe(x_lock)
+
+    def _draw_oled_header_lock_safe(self, x_lock: int):
+        """Helper to draw lock icon safely without raising exceptions."""
+        try:
+            self._draw_lock_icon(x_lock, 0)
+        except Exception:
+            pass
+
+    def _draw_progress_bar(self, x: int, y: int, w: int, h: int, frac: float):
+        """Draw an outline rectangle and fill horizontally to fraction [0,1]."""
+        try:
+            # Outline
+            if hasattr(self.oled, 'rect'):
+                self.oled.rect(x, y, w, h, 1)
+            # Inner fill
+            inner_w = max(0, min(w - 2, int((w - 2) * frac)))
+            if inner_w <= 0 or h <= 2:
+                return
+            if hasattr(self.oled, 'fill_rect'):
+                self.oled.fill_rect(x + 1, y + 1, inner_w, h - 2, 1)
+            else:
+                # Fallback: fill manually with pixels
+                for dx in range(inner_w):
+                    for dy in range(h - 2):
+                        self.oled.pixel(x + 1 + dx, y + 1 + dy, 1)
+        except Exception:
+            # Ignore drawing errors on systems without OLED
+            pass
 
     def _kill_fbi(self):
         """Kill the current fbi process and any stray ones to prevent buildup."""
@@ -408,8 +449,9 @@ class DisplayManager:
             # Department/Agency bar
             department = "Scanning..."
             dept_color = self.colors['department']
+            encrypted = bool(extra.get('encrypted'))
             
-            if tgid and self.talkgroup_manager:
+            if tgid and self.talkgroup_manager and not encrypted:
                 tg_info = self.talkgroup_manager.lookup(tgid)
                 if tg_info:
                     department = tg_info['department']
@@ -427,17 +469,20 @@ class DisplayManager:
                         dept_color = self.colors['low_priority']
                 else:
                     department = f"TGID {tgid} - Unknown"
+            elif encrypted:
+                department = "Encrypted"
+                dept_color = self.colors['medium_priority']
 
             dept_text = department[:40] if len(department) > 40 else department
 
             # Talkgroup and frequency info
             if tgid:
-                if extra.get('active'):
+                if encrypted:
+                    tag = "Encrypted"
+                elif extra.get('active'):
                     # Active transmission - show source address
                     srcaddr = extra.get('srcaddr', 0)
                     tag = f"TGID: {tgid} | SRC: {srcaddr}"
-                    if extra.get('encrypted'):
-                        tag += " [ENC]"
                 else:
                     # Recent activity
                     last_activity = extra.get('last_activity')
@@ -582,6 +627,11 @@ class DisplayManager:
                 self._vol_poll_interval = float(settings.get('volume_poll_interval', 0.2))
             except Exception:
                 self._vol_poll_interval = 0.2
+            # Update grace period during which UI hint overrides system value
+            try:
+                self._vol_hint_grace = float(settings.get('volume_hint_grace', 0.6))
+            except Exception:
+                self._vol_hint_grace = 0.6
         else:
             oled_interval = self._oled_min_interval
             
@@ -597,6 +647,7 @@ class DisplayManager:
             # Check if there's an active transmission with a radio ID
             srcaddr = extra.get('srcaddr')
             active_transmission = extra.get('active') and srcaddr is not None
+            encrypted = bool(extra.get('encrypted'))
             
             if active_transmission and tgid:
                 # ACTIVE TRANSMISSION - Show 3-line format
@@ -606,22 +657,26 @@ class DisplayManager:
                 self._draw_oled_header(extra, settings)
                 
                 # Line 2: TALKGROUP (get full description with scrolling)
-                talkgroup_text = f"TG {tgid}"
-                if self.talkgroup_manager:
-                    tg_info = self.talkgroup_manager.lookup(tgid)
-                    if tg_info:
-                        label = tg_info.get('name') or tg_info.get('description')
-                        if label:
-                            talkgroup_text = self._get_scrolling_text(label, 20)
-                        elif tg_info.get('department'):
-                            dept_text = f"{tg_info['department']} {tgid}"
-                            talkgroup_text = self._get_scrolling_text(dept_text, 20)
+                if encrypted:
+                    talkgroup_text = "ENCRYPTED"
+                else:
+                    talkgroup_text = f"TG {tgid}"
+                    if self.talkgroup_manager:
+                        tg_info = self.talkgroup_manager.lookup(tgid)
+                        if tg_info:
+                            label = tg_info.get('name') or tg_info.get('description')
+                            if label:
+                                talkgroup_text = self._get_scrolling_text(label, 20)
+                            elif tg_info.get('department'):
+                                dept_text = f"{tg_info['department']} {tgid}"
+                                talkgroup_text = self._get_scrolling_text(dept_text, 20)
                         
                 self.oled.text(talkgroup_text, 0, 10, 1)
                 
                 # Line 3: RADIO ID
-                radio_text = f"RADIO {srcaddr}"
-                self.oled.text(radio_text, 0, 20, 1)
+                if not encrypted:
+                    radio_text = f"RADIO {srcaddr}"
+                    self.oled.text(radio_text, 0, 20, 1)
                 
                 # Lines 4-6: Reserved for future dual SDR setup
                 # (Currently empty but available)

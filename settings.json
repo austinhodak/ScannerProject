@@ -32,5 +32,6 @@
     "oled_refresh_rate": 20,
     "oled_scroll_speed": 0.2,
     "volume_poll_interval": 0.2,
+    "volume_hint_grace": 0.6,
     "i2c_frequency_khz": 400
 }
