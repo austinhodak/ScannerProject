@@ -188,7 +188,8 @@ def main():
                     except Exception:
                         pass
                 # Small delay to prevent excessive CPU usage and I/O pressure
-                time.sleep(0.15)
+                # Reduced delay to support faster OLED refresh rates (up to 20 Hz)
+                time.sleep(0.05)
             except Exception as e:
                 logging.error(f"Error in main loop: {e}")
                 display.show_message("Error", "System error occurred")

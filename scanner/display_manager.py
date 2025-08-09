@@ -31,8 +31,12 @@ class DisplayManager:
         self.scroll_offset = 0
         self.scroll_direction = 1
         self.last_scroll_time = 0
-        self.scroll_delay = 0.5  # Seconds between scroll updates
+        self.scroll_delay = 0.5  # Seconds between scroll updates (will be overridden by settings)
         self.current_scroll_text = ""
+        
+        # OLED refresh rate control
+        self._last_oled_update = 0.0
+        self._oled_min_interval = 0.05  # default 20 Hz (1/20 = 0.05)
         # Volume cache (reduce shell calls)
         self._vol_cache = 0
         self._vol_last_time = 0.0
@@ -528,6 +532,23 @@ class DisplayManager:
         if extra is None:
             extra = {}
             
+        # Check OLED refresh rate throttling
+        now = time.time()
+        if settings:
+            oled_refresh_rate = settings.get('oled_refresh_rate', 20)
+            oled_interval = 1.0 / max(1, oled_refresh_rate)  # Prevent division by zero
+            
+            # Update scroll speed from settings
+            self.scroll_delay = settings.get('oled_scroll_speed', 0.2)
+        else:
+            oled_interval = self._oled_min_interval
+            
+        # Throttle OLED updates based on refresh rate setting
+        if now - self._last_oled_update < oled_interval:
+            return
+            
+        self._last_oled_update = now
+            
         try:
             self.oled.fill(0)
             
@@ -570,23 +591,8 @@ class DisplayManager:
                 # Draw composed header: SID/VOL + lock icon + bars
                 self._draw_oled_header(extra, settings)
                 
-                # Line 2: Scanning status with scrolling
-                if tgid:
-                    if self.talkgroup_manager:
-                        tg_info = self.talkgroup_manager.lookup(tgid)
-                        if tg_info:
-                            last_tg = tg_info.get('name') or tg_info.get('description') or f"TG {tgid}"
-                        else:
-                            last_tg = f"TG {tgid}"
-                    else:
-                        last_tg = f"TG {tgid}"
-                    
-                    # Add "LAST: " prefix and use scrolling
-                    last_text = f"LAST: {last_tg}"
-                    scrolled_last = self._get_scrolling_text(last_text, 20)
-                    self.oled.text(scrolled_last, 0, 10, 1)
-                else:
-                    self.oled.text("SCANNING...", 0, 10, 1)
+                # Line 2: Scanning status
+                self.oled.text("SCANNING...", 0, 10, 1)
                 
                 # Line 3: Connection status
                 if system != "Offline":

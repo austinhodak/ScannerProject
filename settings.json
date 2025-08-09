@@ -28,5 +28,7 @@
     "op25_auto_restart": true,
     "op25_auto_start": true,
     "system_name": "ERIE COUNTY",
-    "prefer_op25_system_name": true
+    "prefer_op25_system_name": true,
+    "oled_refresh_rate": 20,
+    "oled_scroll_speed": 0.2
 }
