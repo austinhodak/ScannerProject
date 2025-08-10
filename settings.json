@@ -31,7 +31,7 @@
     "prefer_op25_system_name": true,
     "tft_enable": true,
     "tft_update_interval": 0.1,
-    "st7789_cs_pin": "CE0",
+    "st7789_cs_pin": "D5",
     "st7789_dc_pin": "D25",
     "st7789_rst_pin": "D27",
     "oled_refresh_rate": 20,
