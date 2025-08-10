@@ -902,17 +902,42 @@ class DisplayManager:
         """Show a temporary message on both displays"""
         # Note: duration parameter reserved for future use
         try:
-            # TFT message
-            img = Image.new('RGB', (self.width, self.height), color=self.colors['background'])
-            draw = ImageDraw.Draw(img)
-            
-            # Center the message
-            draw.text((50, 100), title, fill=self.colors['header'], font=self.font_large)
-            draw.text((50, 150), message, fill=self.colors['text'], font=self.font_med)
-            
-            img.save(self.image_path)
-            if self.st7789_available:
-                self._update_st7789_display(img)
+            # ST7789 message
+            if self.st7789_available and self.st7789_display is not None:
+                try:
+                    import displayio
+                    from adafruit_display_text import label
+                    from adafruit_display_shapes.rect import Rect
+                    import terminalio
+                    
+                    colors = {
+                        'black': 0x0000,
+                        'white': 0xFFFF,
+                        'orange': 0xFD20
+                    }
+                    
+                    # Create message display
+                    splash = displayio.Group()
+                    
+                    # Black background
+                    bg = Rect(0, 0, self.width, self.height, fill=colors['black'])
+                    splash.append(bg)
+                    
+                    # Title (centered)
+                    title_label = label.Label(terminalio.FONT, text=title[:30], color=colors['orange'], 
+                                            x=(self.width - len(title) * 6) // 2, y=100)
+                    splash.append(title_label)
+                    
+                    # Message (centered)
+                    message_label = label.Label(terminalio.FONT, text=message[:35], color=colors['white'],
+                                              x=(self.width - len(message) * 6) // 2, y=130)
+                    splash.append(message_label)
+                    
+                    # Show on display
+                    self.st7789_display.root_group = splash
+                    
+                except Exception as e:
+                    logging.debug(f"Error showing ST7789 message: {e}")
             
             # OLED message
             if self.oled_available and self.oled is not None:
