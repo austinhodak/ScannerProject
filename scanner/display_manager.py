@@ -366,46 +366,141 @@ class DisplayManager:
             # Ignore drawing errors on systems without OLED
             pass
 
-    def _update_st7789_display(self, image):
-        """Update the ST7789 display with the given PIL image."""
+    def _update_st7789_display(self, system, freq, tgid, extra, settings):
+        """Update the ST7789 display with current scanner information using direct displayio elements."""
         if not self.st7789_available or self.st7789_display is None:
             return False
         
         try:
-            # Convert PIL image to displayio bitmap
-            # Resize image to match display dimensions if needed
-            if image.size != (self.width, self.height):
-                image = image.resize((self.width, self.height))
-            
-            # Convert to RGB if not already
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            # Create a displayio bitmap and palette
             import displayio
+            from adafruit_display_text import label
+            from adafruit_display_shapes.rect import Rect
+            import terminalio
+            from datetime import datetime
             
-            # For now, save image and reload - direct bitmap conversion is complex
-            # This is a simplified approach that can be optimized later
-            temp_path = "/tmp/st7789_temp.bmp"
-            image.save(temp_path, "BMP")
+            # Color definitions (16-bit RGB565 format)
+            colors = {
+                'black': 0x0000,
+                'white': 0xFFFF,
+                'orange': 0xFD20,    # Orange for headers
+                'yellow': 0xFFE0,    # Yellow for department
+                'blue': 0x001F,      # Blue for status
+                'red': 0xF800,       # Red for high priority
+                'green': 0x07E0      # Green for low priority
+            }
             
-            # Load as displayio bitmap
-            with open(temp_path, "rb") as f:
-                odb = displayio.OnDiskBitmap(f)
-                face = displayio.TileGrid(odb, pixel_shader=odb.pixel_shader)
+            # Create main group
+            splash = displayio.Group()
+            
+            # Background (black)
+            bg = Rect(0, 0, self.width, self.height, fill=colors['black'])
+            splash.append(bg)
+            
+            # Header bar (orange)
+            header = Rect(0, 0, self.width, 30, fill=colors['orange'])
+            splash.append(header)
+            
+            # Timestamp
+            now_str = datetime.now().strftime("%b%d %H:%M:%S")
+            time_text = label.Label(terminalio.FONT, text=now_str, color=colors['black'], x=self.width-100, y=15)
+            splash.append(time_text)
+            
+            # Connection status indicator
+            status_color = colors['red'] if system == "Offline" else colors['green']
+            status_indicator = Rect(10, 5, 15, 20, fill=status_color)
+            splash.append(status_indicator)
+            
+            # System name bar
+            system_text = system[:35] if system else "No System"
+            system_bar = Rect(0, 30, self.width, 40, fill=colors['orange'])
+            splash.append(system_bar)
+            system_label = label.Label(terminalio.FONT, text=system_text, color=colors['black'], x=10, y=50)
+            splash.append(system_label)
+            
+            # Department/Agency bar
+            department = "Scanning..."
+            dept_color = colors['yellow']
+            encrypted = bool(extra.get('encrypted'))
+            
+            if tgid and self.talkgroup_manager and not encrypted:
+                tg_info = self.talkgroup_manager.lookup(tgid)
+                if tg_info:
+                    department = tg_info['department']
+                    description = tg_info['description']
+                    if description:
+                        department = f"{department} - {description}"
+                    
+                    # Color code by priority
+                    priority = tg_info.get('priority', 'Medium')
+                    if priority == 'High':
+                        dept_color = colors['red']
+                    elif priority == 'Medium':
+                        dept_color = colors['orange']
+                    else:
+                        dept_color = colors['green']
+                else:
+                    department = f"TGID {tgid} - Unknown"
+            elif encrypted:
+                department = "Encrypted"
+                dept_color = colors['orange']
+            
+            dept_text = department[:40] if len(department) > 40 else department
+            dept_bar = Rect(0, 70, self.width, 40, fill=dept_color)
+            splash.append(dept_bar)
+            dept_label = label.Label(terminalio.FONT, text=dept_text, color=colors['black'], x=10, y=90)
+            splash.append(dept_label)
+            
+            # Talkgroup info
+            if tgid:
+                if encrypted:
+                    tag = "Encrypted"
+                elif extra.get('active'):
+                    srcaddr = extra.get('srcaddr', 0)
+                    tag = f"TGID: {tgid} | SRC: {srcaddr}"
+                else:
+                    last_activity = extra.get('last_activity')
+                    if last_activity:
+                        tag = f"TGID: {tgid} (last: {last_activity}s)"
+                    else:
+                        tag = f"TGID: {tgid}"
+            else:
+                tag = "Scanning..."
+            
+            tag_label = label.Label(terminalio.FONT, text=tag[:45], color=colors['white'], x=10, y=130)
+            splash.append(tag_label)
+            
+            # Frequency
+            freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
+            freq_label = label.Label(terminalio.FONT, text=freq_text, color=colors['white'], x=10, y=150)
+            splash.append(freq_label)
+            
+            # System info
+            nac = extra.get('nac', '--')
+            wacn = extra.get('wacn', '--')
+            sysid = extra.get('sysid', '--')
+            site_info = f"NAC:{nac} WACN:{wacn} SYS:{sysid}"
+            if extra.get('error'):
+                site_info += f" ERR:{extra.get('error')}"
+            
+            info_label = label.Label(terminalio.FONT, text=site_info[:45], color=colors['white'], x=10, y=170)
+            splash.append(info_label)
+            
+            # Status bar at bottom
+            status_bar = Rect(0, self.height - 30, self.width, 30, fill=colors['blue'])
+            splash.append(status_bar)
+            
+            volume = settings.get('volume_level', 0)
+            mute_status = "MUTE" if settings.get('mute') else f"VOL:{volume}"
+            rec_status = "REC" if settings.get('recording') else ""
+            status_text = f"{mute_status} | SQL:2"
+            if rec_status:
+                status_text += f" | {rec_status}"
                 
-                # Create a group to hold the image
-                splash = displayio.Group()
-                splash.append(face)
-                
-                # Show on display
-                self.st7789_display.root_group = splash
+            status_label = label.Label(terminalio.FONT, text=status_text[:40], color=colors['white'], x=10, y=self.height-15)
+            splash.append(status_label)
             
-            # Clean up temp file
-            try:
-                os.remove(temp_path)
-            except:
-                pass
+            # Update display
+            self.st7789_display.root_group = splash
                 
             return True
             
@@ -628,7 +723,7 @@ class DisplayManager:
 
             # Push to ST7789 display
             if self.st7789_available and (now_ts - self._last_tft_push) >= update_interval:
-                if self._update_st7789_display(img):
+                if self._update_st7789_display(system, freq, tgid, extra, settings):
                     self._last_tft_push = now_ts
                 else:
                     # Fallback to saving image file for debugging
