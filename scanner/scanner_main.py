@@ -67,6 +67,9 @@ def main():
         rotation = settings.get("display_rotation", 0)
         display = DisplayManager(talkgroup_manager=talkgroup_mgr, rotation=rotation)
         
+        # Initialize ST7789 display with configured pins
+        display.init_st7789(settings)
+        
         # Initialize input manager
         input_mgr = InputManager()
         

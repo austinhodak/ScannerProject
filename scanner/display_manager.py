@@ -2,7 +2,6 @@
 from PIL import Image, ImageDraw, ImageFont
 import os
 from datetime import datetime
-import mmap
 import time
 import subprocess
 import re
@@ -11,15 +10,28 @@ import busio
 import adafruit_ssd1306
 import logging
 
+try:
+    import displayio
+    from fourwire import FourWire
+    import adafruit_st7789
+    ST7789_AVAILABLE = True
+except ImportError:
+    try:
+        import displayio
+        from displayio import FourWire
+        import adafruit_st7789
+        ST7789_AVAILABLE = True
+    except ImportError:
+        ST7789_AVAILABLE = False
+
 class DisplayManager:
     def __init__(self, talkgroup_manager=None, rotation=0):
-        # TFT settings
-        self.width = 480
-        self.height = 320
+        # ST7789 TFT settings
+        self.width = 320
+        self.height = 240
         self.image_path = "/tmp/scanner_screen.jpg"
         self.talkgroup_manager = talkgroup_manager
         self._last_tft_signature = None
-        self._fbi_process = None  # Track current fbi process
         self.rotation = rotation if rotation in [0, 90, 180, 270] else 0  # Rotation angle: 0, 90, 180, or 270 degrees
         
         # Initialize fonts with fallbacks (only for TFT display)
@@ -43,33 +55,18 @@ class DisplayManager:
         self._vol_poll_interval = 1.0  # seconds between actual system volume polls
         self._vol_hint_grace = 0.6     # seconds to trust UI hint before polling system
         self._last_user_volume_change_time = 0.0
-        # TFT throttling/settings
+        # ST7789 TFT throttling/settings
         self._last_tft_push = 0.0
-        self._tft_min_interval = 5.0  # default seconds between framebuffer pushes
-        self._framebuffer_available = os.path.exists("/dev/fb1")
-        self._fb_mmap = None
-        self._fb_fd = None
-        self._fb_bpp = 2  # bytes per pixel (RGB565)
+        self._tft_min_interval = 0.1  # default seconds between ST7789 updates
         # Skip TFT during rapid user interactions
         self._skip_tft_until = 0.0
         # Volume adjustment mode (UI hint)
         self._volume_mode_active = False
-        if self._framebuffer_available:
-            try:
-                self._fb_fd = os.open("/dev/fb1", os.O_RDWR)
-                self._fb_mmap = mmap.mmap(self._fb_fd, self.width * self.height * self._fb_bpp,
-                                          mmap.MAP_SHARED, mmap.PROT_WRITE | mmap.PROT_READ)
-                logging.info("Framebuffer /dev/fb1 mapped successfully (direct blit mode)")
-            except Exception as e:
-                logging.warning(f"Failed to mmap /dev/fb1, will use fbi fallback: {e}")
-                try:
-                    if self._fb_mmap:
-                        self._fb_mmap.close()
-                    if self._fb_fd:
-                        os.close(self._fb_fd)
-                except Exception:
-                    pass
-                self._fb_mmap = None
+        
+        # Initialize ST7789 display
+        self.st7789_available = False
+        self.st7789_display = None
+        # ST7789 initialization will be done later via init_st7789() when settings are available
         
         # Color scheme
         self.colors = {
@@ -107,6 +104,41 @@ class DisplayManager:
             logging.warning(f"OLED display not available: {e}")
             self.oled_available = False
             self.oled = None
+    
+    def init_st7789(self, settings):
+        """Initialize ST7789 display with configurable pin settings."""
+        if not ST7789_AVAILABLE:
+            return
+        
+        try:
+            displayio.release_displays()
+            spi = board.SPI()
+            
+            # Get pin assignments from settings with defaults
+            cs_pin_name = settings.get('st7789_cs_pin', 'CE0')
+            dc_pin_name = settings.get('st7789_dc_pin', 'D25')
+            rst_pin_name = settings.get('st7789_rst_pin', 'D24')
+            
+            # Convert pin names to board objects
+            tft_cs = getattr(board, cs_pin_name, board.CE0)
+            tft_dc = getattr(board, dc_pin_name, board.D25)
+            tft_rst = getattr(board, rst_pin_name, board.D24)
+            
+            display_bus = FourWire(spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst)
+            self.st7789_display = adafruit_st7789.ST7789(
+                display_bus, 
+                width=self.width, 
+                height=self.height,
+                rotation=self.rotation // 90,  # Convert degrees to 0-3 range
+                rowstart=0,  # May need adjustment based on specific display
+                colstart=0   # May need adjustment based on specific display
+            )
+            self.st7789_available = True
+            logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) on pins CS:{cs_pin_name}, DC:{dc_pin_name}, RST:{rst_pin_name}")
+        except Exception as e:
+            logging.warning(f"ST7789 display not available: {e}")
+            self.st7789_available = False
+            self.st7789_display = None
     
     def _format_signal_bars(self, extra) -> str:
         """Return signal bars like |||| using signal_quality in range [0, 1]."""
@@ -244,29 +276,43 @@ class DisplayManager:
             pass
 
     def _draw_oled_header(self, extra, settings):
-        """Draw OLED header: volume on far left, signal fill bar on far right."""
-        # Left: Volume
-        vol_text = self._format_oled_header(extra, settings)
-        # Draw inverse when in volume adjust mode
+        """Draw OLED header: time on far left, volume next, signal bar on far right."""
+        # Left-most: current time HH:MM
         try:
-            text_px = min(len(vol_text), 6) * 6
-            if self._volume_mode_active:
-                # Filled rect then black text for inverse effect
-                if hasattr(self.oled, 'fill_rect'):
-                    self.oled.fill_rect(0, 0, max(18, text_px + 2), 10, 1)
-                else:
-                    for dx in range(max(18, text_px + 2)):
-                        for dy in range(10):
-                            self.oled.pixel(dx, dy, 1)
-                # Draw text in black
-                if hasattr(self.oled, 'text'):
-                    self.oled.text(vol_text[:6], 0, 0, 0)
-            else:
-                self.oled.text(vol_text[:6], 0, 0, 1)
+            time_text = datetime.now().strftime("%H:%M")
         except Exception:
-            # Fallback to normal draw
-            self.oled.text(vol_text[:6], 0, 0, 1)
-        left_px_end = min(len(vol_text), 20) * 6
+            time_text = "--:--"
+        # Draw time normally (not inverted)
+        try:
+            self.oled.text(time_text[:5], 0, 0, 1)
+        except Exception:
+            pass
+        time_px = min(len(time_text), 5) * 6
+
+        # Volume text immediately to the right of time, with a space
+        vol_text = self._format_oled_header(extra, settings)
+        vol_x = time_px + 6  # 1-char spacer
+        try:
+            vol_px = min(len(vol_text), 6) * 6
+            if self._volume_mode_active:
+                # Invert only the volume region
+                if hasattr(self.oled, 'fill_rect'):
+                    self.oled.fill_rect(vol_x, 0, max(18, vol_px + 2), 10, 1)
+                else:
+                    for dx in range(max(18, vol_px + 2)):
+                        for dy in range(10):
+                            self.oled.pixel(vol_x + dx, dy, 1)
+                if hasattr(self.oled, 'text'):
+                    self.oled.text(vol_text[:6], vol_x, 0, 0)
+            else:
+                self.oled.text(vol_text[:6], vol_x, 0, 1)
+        except Exception:
+            # Fallback plain draw
+            try:
+                self.oled.text(vol_text[:6], vol_x, 0, 1)
+            except Exception:
+                pass
+        left_px_end = vol_x + min(len(vol_text), 20) * 6
 
         # Right: Signal rectangle fill (progress bar)
         # Determine signal quality in [0,1]
@@ -320,50 +366,51 @@ class DisplayManager:
             # Ignore drawing errors on systems without OLED
             pass
 
-    def _kill_fbi(self):
-        """Kill the current fbi process and any stray ones to prevent buildup."""
+    def _update_st7789_display(self, image):
+        """Update the ST7789 display with the given PIL image."""
+        if not self.st7789_available or self.st7789_display is None:
+            return False
+        
         try:
-            # First, kill our tracked process if it exists
-            if self._fbi_process is not None:
-                try:
-                    if self._fbi_process.poll() is None:  # Process is still running
-                        self._fbi_process.terminate()
-                        # Give it a moment to terminate gracefully
-                        try:
-                            self._fbi_process.wait(timeout=0.5)
-                        except subprocess.TimeoutExpired:
-                            # Force kill if it doesn't terminate
-                            self._fbi_process.kill()
-                            self._fbi_process.wait()
-                except Exception as e:
-                    logging.debug(f"Error terminating tracked fbi process: {e}")
-                finally:
-                    self._fbi_process = None
+            # Convert PIL image to displayio bitmap
+            # Resize image to match display dimensions if needed
+            if image.size != (self.width, self.height):
+                image = image.resize((self.width, self.height))
             
-            # Also clean up any other stray fbi processes (fallback safety)
-            subprocess.run(["pkill", "-x", "fbi"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.5)
-        except Exception as e:
-            logging.debug(f"Error in _kill_fbi: {e}")
-            self._fbi_process = None
-
-    def _start_fbi(self, image_path):
-        """Start a new fbi process, killing the old one first."""
-        try:
-            # Kill any existing fbi process
-            self._kill_fbi()
+            # Convert to RGB if not already
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
             
-            # Start new fbi process with proper process management
-            cmd = ["sudo", "fbi", "-T", "1", "-d", "/dev/fb1", "-noverbose", "-a", "-once", image_path]
-            self._fbi_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                preexec_fn=os.setsid  # Create new process group for easier cleanup
-            )
+            # Create a displayio bitmap and palette
+            import displayio
+            
+            # For now, save image and reload - direct bitmap conversion is complex
+            # This is a simplified approach that can be optimized later
+            temp_path = "/tmp/st7789_temp.bmp"
+            image.save(temp_path, "BMP")
+            
+            # Load as displayio bitmap
+            with open(temp_path, "rb") as f:
+                odb = displayio.OnDiskBitmap(f)
+                face = displayio.TileGrid(odb, pixel_shader=odb.pixel_shader)
+                
+                # Create a group to hold the image
+                splash = displayio.Group()
+                splash.append(face)
+                
+                # Show on display
+                self.st7789_display.show(splash)
+            
+            # Clean up temp file
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+                
             return True
+            
         except Exception as e:
-            logging.error(f"Error starting fbi process: {e}")
-            self._fbi_process = None
+            logging.error(f"Error updating ST7789 display: {e}")
             return False
 
     def set_rotation(self, angle):
@@ -576,53 +623,18 @@ class DisplayManager:
             draw.rectangle((0, self.height - 40, self.width, self.height), fill=self.colors['status'])
             draw.text((10, self.height - 30), status_text, fill=self.colors['text'], font=self.font_med)
 
-            # Apply rotation if needed
-            if self.rotation != 0:
-                img = img.rotate(-self.rotation, expand=True)  # PIL rotates counter-clockwise, so negate
-                # For rotated images, we may need to resize to fit framebuffer
-                if self.rotation in [90, 270]:
-                    # For 90/270 degree rotations, resize to fit the original framebuffer dimensions
-                    img = img.resize((self.width, self.height))
+            # Note: ST7789 rotation is handled in display initialization
+            # PIL rotation is not needed as ST7789 driver handles this
 
-            # Push to framebuffer (prefer direct blit)
-            if self._fb_mmap is not None:
-                try:
-                    # Convert PIL image to RGB565 format manually
-                    rgb = img.convert('RGB')
-                    # Ensure image dimensions match framebuffer
-                    if img.size != (self.width, self.height):
-                        rgb = rgb.resize((self.width, self.height))
-                    rgb_data = rgb.tobytes('raw', 'RGB')
-                    
-                    # Convert RGB888 to RGB565 (16-bit) format
-                    fb_bytes = bytearray()
-                    for i in range(0, len(rgb_data), 3):
-                        r = rgb_data[i] >> 3      # 5 bits
-                        g = rgb_data[i+1] >> 2    # 6 bits  
-                        b = rgb_data[i+2] >> 3    # 5 bits
-                        
-                        # Pack into 16-bit RGB565 little-endian
-                        rgb565 = (r << 11) | (g << 5) | b
-                        fb_bytes.extend(rgb565.to_bytes(2, byteorder='little'))
-                    
-                    if len(fb_bytes) >= self.width * self.height * self._fb_bpp:
-                        self._fb_mmap.seek(0)
-                        self._fb_mmap.write(fb_bytes[:self.width * self.height * self._fb_bpp])
-                        self._last_tft_push = now_ts
-                except Exception as e:
-                    logging.warning(f"Direct blit to framebuffer failed, falling back to fbi: {e}")
-                    # Fallback to fbi
-                    if self._framebuffer_available and (now_ts - self._last_tft_push) >= update_interval:
-                        img.save(self.image_path)
-                        self._last_tft_push = now_ts
-                        self._start_fbi(self.image_path)
-            elif self._framebuffer_available:
-                if now_ts - self._last_tft_push >= update_interval:
-                    img.save(self.image_path)
+            # Push to ST7789 display
+            if self.st7789_available and (now_ts - self._last_tft_push) >= update_interval:
+                if self._update_st7789_display(img):
                     self._last_tft_push = now_ts
-                    self._start_fbi(self.image_path)
+                else:
+                    # Fallback to saving image file for debugging
+                    img.save(self.image_path)
             else:
-                # No framebuffer; optionally keep a debug image file
+                # No ST7789 display; save image file for debugging/development
                 img.save(self.image_path)
                 
         except Exception as e:
@@ -752,17 +764,17 @@ class DisplayManager:
     def clear(self):
         """Clear both displays"""
         try:
-            if os.path.exists("/dev/fb1"):
-                # Clear framebuffer directly if mapped
-                if self._fb_mmap is not None:
-                    try:
-                        self._fb_mmap.seek(0)
-                        self._fb_mmap.write(b"\x00" * (self.width * self.height * self._fb_bpp))
-                    except Exception:
-                        pass
-                else:
-                    self._start_fbi("/dev/null")
+            # Clear ST7789 display
+            if self.st7789_available and self.st7789_display is not None:
+                try:
+                    import displayio
+                    # Create a black screen
+                    splash = displayio.Group()
+                    self.st7789_display.show(splash)
+                except Exception as e:
+                    logging.debug(f"Error clearing ST7789 display: {e}")
             
+            # Clear OLED display
             if self.oled_available and self.oled is not None:
                 self.oled.fill(0)
                 self.oled.show()
@@ -770,25 +782,16 @@ class DisplayManager:
             logging.error(f"Error clearing displays: {e}")
 
     def cleanup(self):
-        """Clean up resources including any running fbi processes"""
+        """Clean up display resources"""
         try:
-            # Kill any fbi processes
-            self._kill_fbi()
-            
-            # Close framebuffer mapping if open
-            if self._fb_mmap is not None:
+            # Release ST7789 display resources
+            if self.st7789_available and self.st7789_display is not None:
                 try:
-                    self._fb_mmap.close()
-                    self._fb_mmap = None
-                except Exception:
-                    pass
-                    
-            if self._fb_fd is not None:
-                try:
-                    os.close(self._fb_fd)
-                    self._fb_fd = None
-                except Exception:
-                    pass
+                    import displayio
+                    displayio.release_displays()
+                    self.st7789_display = None
+                except Exception as e:
+                    logging.debug(f"Error releasing ST7789 display: {e}")
                     
         except Exception as e:
             logging.error(f"Error in DisplayManager cleanup: {e}")
@@ -812,16 +815,9 @@ class DisplayManager:
             draw.text((50, 100), title, fill=self.colors['header'], font=self.font_large)
             draw.text((50, 150), message, fill=self.colors['text'], font=self.font_med)
             
-            # Apply rotation if needed
-            if self.rotation != 0:
-                img = img.rotate(-self.rotation, expand=True)  # PIL rotates counter-clockwise, so negate
-                # For rotated images, we may need to resize to fit framebuffer
-                if self.rotation in [90, 270]:
-                    img = img.resize((self.width, self.height))
-            
             img.save(self.image_path)
-            if os.path.exists("/dev/fb1"):
-                self._start_fbi(self.image_path)
+            if self.st7789_available:
+                self._update_st7789_display(img)
             
             # OLED message
             if self.oled_available and self.oled is not None:
