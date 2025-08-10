@@ -130,8 +130,9 @@ class DisplayManager:
                 width=self.width, 
                 height=self.height,
                 rotation=self.rotation // 90,  # Convert degrees to 0-3 range
-                rowstart=80,  # Common offset for 320x240 ST7789 displays
-                colstart=0    # May need adjustment based on specific display
+                rowstart=0,   # Reset to 0 - the 80 offset was causing issues
+                colstart=0,   # Keep at 0
+                bgr=True      # Many ST7789 displays need BGR color order
             )
             self.st7789_available = True
             logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) on pins CS:{cs_pin_name}, DC:{dc_pin_name}, RST:{rst_pin_name}")
@@ -392,9 +393,13 @@ class DisplayManager:
             # Create main group
             splash = displayio.Group()
             
-            # Background (black)
+            # Fill entire screen with black background first
             bg = Rect(0, 0, self.width, self.height, fill=colors['black'])
             splash.append(bg)
+            
+            # Add a test border to see if display area is correct
+            border = Rect(0, 0, self.width, self.height, fill=None, outline=colors['white'])
+            splash.append(border)
             
             # Header bar (orange)
             header = Rect(0, 0, self.width, 30, fill=colors['orange'])
