@@ -130,8 +130,8 @@ class DisplayManager:
                 width=self.width, 
                 height=self.height,
                 rotation=self.rotation // 90,  # Convert degrees to 0-3 range
-                rowstart=0,  # May need adjustment based on specific display
-                colstart=0   # May need adjustment based on specific display
+                rowstart=80,  # Common offset for 320x240 ST7789 displays
+                colstart=0    # May need adjustment based on specific display
             )
             self.st7789_available = True
             logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) on pins CS:{cs_pin_name}, DC:{dc_pin_name}, RST:{rst_pin_name}")
@@ -399,7 +399,7 @@ class DisplayManager:
                 splash.append(face)
                 
                 # Show on display
-                self.st7789_display.show(splash)
+                self.st7789_display.root_group = splash
             
             # Clean up temp file
             try:
@@ -770,7 +770,7 @@ class DisplayManager:
                     import displayio
                     # Create a black screen
                     splash = displayio.Group()
-                    self.st7789_display.show(splash)
+                    self.st7789_display.root_group = splash
                 except Exception as e:
                     logging.debug(f"Error clearing ST7789 display: {e}")
             
