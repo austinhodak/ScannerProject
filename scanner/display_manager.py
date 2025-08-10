@@ -136,6 +136,7 @@ class DisplayManager:
             )
             self.st7789_available = True
             logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) on pins CS:{cs_pin_name}, DC:{dc_pin_name}, RST:{rst_pin_name}")
+            logging.info(f"ST7789 config: rowstart=0, colstart=0, bgr=True, rotation={self.rotation // 90}")
         except Exception as e:
             logging.warning(f"ST7789 display not available: {e}")
             self.st7789_available = False
@@ -888,8 +889,21 @@ class DisplayManager:
             if self.st7789_available and self.st7789_display is not None:
                 try:
                     import displayio
+                    import time
+                    
+                    # Clear the display first
+                    splash = displayio.Group()
+                    self.st7789_display.root_group = splash
+                    
+                    # Give background thread time to process
+                    time.sleep(0.1)
+                    
+                    # Release all displays
                     displayio.release_displays()
                     self.st7789_display = None
+                    self.st7789_available = False
+                    
+                    logging.info("ST7789 display cleaned up successfully")
                 except Exception as e:
                     logging.debug(f"Error releasing ST7789 display: {e}")
                     
