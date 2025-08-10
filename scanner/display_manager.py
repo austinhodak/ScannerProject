@@ -11,18 +11,10 @@ import adafruit_ssd1306
 import logging
 
 try:
-    import displayio
-    from fourwire import FourWire
-    import adafruit_st7789
+    import st7789
     ST7789_AVAILABLE = True
 except ImportError:
-    try:
-        import displayio
-        from displayio import FourWire
-        import adafruit_st7789
-        ST7789_AVAILABLE = True
-    except ImportError:
-        ST7789_AVAILABLE = False
+    ST7789_AVAILABLE = False
 
 class DisplayManager:
     def __init__(self, talkgroup_manager=None, rotation=0):
@@ -68,11 +60,6 @@ class DisplayManager:
         self.st7789_display = None
         # ST7789 initialization will be done later via init_st7789() when settings are available
         
-        # Pre-create display elements for better performance
-        self._st7789_splash = None
-        self._st7789_text_labels = {}
-        self._st7789_bars = {}
-        
         # Color scheme
         self.colors = {
             'background': 'black',
@@ -111,36 +98,43 @@ class DisplayManager:
             self.oled = None
     
     def init_st7789(self, settings):
-        """Initialize ST7789 display with configurable pin settings."""
+        """Initialize ST7789 display with high-performance st7789 library."""
         if not ST7789_AVAILABLE:
             return
         
         try:
-            displayio.release_displays()
-            spi = board.SPI()
-            
             # Get pin assignments from settings with defaults
-            cs_pin_name = settings.get('st7789_cs_pin', 'CE0')
-            dc_pin_name = settings.get('st7789_dc_pin', 'D25')
-            rst_pin_name = settings.get('st7789_rst_pin', 'D24')
+            cs_pin_name = settings.get('st7789_cs_pin', 'D5')
+            dc_pin_name = settings.get('st7789_dc_pin', 'D25') 
+            rst_pin_name = settings.get('st7789_rst_pin', 'D27')
             
-            # Convert pin names to board objects
-            tft_cs = getattr(board, cs_pin_name, board.CE0)
-            tft_dc = getattr(board, dc_pin_name, board.D25)
-            tft_rst = getattr(board, rst_pin_name, board.D24)
+            # Convert pin names to GPIO numbers
+            import board
+            cs_pin = getattr(board, cs_pin_name)._pin.id if hasattr(getattr(board, cs_pin_name), '_pin') else 5
+            dc_pin = getattr(board, dc_pin_name)._pin.id if hasattr(getattr(board, dc_pin_name), '_pin') else 25
+            rst_pin = getattr(board, rst_pin_name)._pin.id if hasattr(getattr(board, rst_pin_name), '_pin') else 27
             
-            display_bus = FourWire(spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst)
-            self.st7789_display = adafruit_st7789.ST7789(
-                display_bus, 
-                width=self.width, 
+            # Initialize ST7789 with high-speed SPI
+            self.st7789_display = st7789.ST7789(
+                port=0,              # SPI port
+                cs=cs_pin,          # CS pin
+                dc=dc_pin,          # DC pin  
+                rst=rst_pin,        # Reset pin
+                backlight=None,     # No backlight control for now
+                width=self.width,
                 height=self.height,
-                rotation=90,  # Use 90 degrees like your working example
-                rowstart=0,   # Reset to 0 like your working example
-                colstart=0
+                rotation=0,         # Portrait mode
+                spi_speed_hz=80000000,  # 80MHz - very fast!
             )
+            
             self.st7789_available = True
-            logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) on pins CS:{cs_pin_name}, DC:{dc_pin_name}, RST:{rst_pin_name}")
-            logging.info(f"ST7789 config: rowstart=80, colstart=0, bgr=False, rotation={self.rotation // 90}")
+            logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) at 80MHz")
+            logging.info(f"ST7789 pins: CS=GPIO{cs_pin}, DC=GPIO{dc_pin}, RST=GPIO{rst_pin}")
+            
+            # Clear the display
+            black_image = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
+            self.st7789_display.display(black_image)
+            
         except Exception as e:
             logging.warning(f"ST7789 display not available: {e}")
             self.st7789_available = False
@@ -372,97 +366,48 @@ class DisplayManager:
             # Ignore drawing errors on systems without OLED
             pass
 
-    def _init_st7789_layout(self):
-        """Initialize the ST7789 display layout once for better performance."""
-        if not self.st7789_available or self.st7789_display is None:
-            return False
-            
-        try:
-            import displayio
-            from adafruit_display_text import label
-            import terminalio
-            
-            # Create main group once
-            self._st7789_splash = displayio.Group()
-            
-            # Create background bitmap (more efficient than Rect for large areas)
-            bg_bitmap = displayio.Bitmap(self.width, self.height, 1)
-            bg_palette = displayio.Palette(1)
-            bg_palette[0] = 0x0000  # Black
-            bg_sprite = displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette, x=0, y=0)
-            self._st7789_splash.append(bg_sprite)
-            
-            # Create colored bar bitmaps
-            header_bitmap = displayio.Bitmap(self.width, 30, 1)
-            header_palette = displayio.Palette(1)
-            header_palette[0] = 0xFD20  # Orange
-            self._st7789_bars['header'] = displayio.TileGrid(header_bitmap, pixel_shader=header_palette, x=0, y=0)
-            self._st7789_splash.append(self._st7789_bars['header'])
-            
-            dept_bitmap = displayio.Bitmap(self.width, 40, 1)
-            dept_palette = displayio.Palette(1)
-            dept_palette[0] = 0xFFE0  # Yellow (default)
-            self._st7789_bars['dept'] = displayio.TileGrid(dept_bitmap, pixel_shader=dept_palette, x=0, y=70)
-            self._st7789_splash.append(self._st7789_bars['dept'])
-            
-            status_bitmap = displayio.Bitmap(self.width, 30, 1)
-            status_palette = displayio.Palette(1)
-            status_palette[0] = 0x001F  # Blue
-            self._st7789_bars['status'] = displayio.TileGrid(status_bitmap, pixel_shader=status_palette, x=0, y=self.height-30)
-            self._st7789_splash.append(self._st7789_bars['status'])
-            
-            # Create text labels (reuse these, just update text)
-            self._st7789_text_labels['time'] = label.Label(terminalio.FONT, text="--:--:--", color=0x0000, x=self.width-80, y=15)
-            self._st7789_splash.append(self._st7789_text_labels['time'])
-            
-            self._st7789_text_labels['system'] = label.Label(terminalio.FONT, text="System", color=0x0000, x=10, y=50)
-            self._st7789_splash.append(self._st7789_text_labels['system'])
-            
-            self._st7789_text_labels['dept'] = label.Label(terminalio.FONT, text="Department", color=0x0000, x=10, y=90)
-            self._st7789_splash.append(self._st7789_text_labels['dept'])
-            
-            self._st7789_text_labels['tgid'] = label.Label(terminalio.FONT, text="TGID Info", color=0xFFFF, x=10, y=130)
-            self._st7789_splash.append(self._st7789_text_labels['tgid'])
-            
-            self._st7789_text_labels['freq'] = label.Label(terminalio.FONT, text="Frequency", color=0xFFFF, x=10, y=150)
-            self._st7789_splash.append(self._st7789_text_labels['freq'])
-            
-            self._st7789_text_labels['info'] = label.Label(terminalio.FONT, text="System Info", color=0xFFFF, x=10, y=170)
-            self._st7789_splash.append(self._st7789_text_labels['info'])
-            
-            self._st7789_text_labels['status_text'] = label.Label(terminalio.FONT, text="Status", color=0xFFFF, x=10, y=self.height-15)
-            self._st7789_splash.append(self._st7789_text_labels['status_text'])
-            
-            # Set the display group
-            self.st7789_display.root_group = self._st7789_splash
-            
-            return True
-            
-        except Exception as e:
-            logging.error(f"Error initializing ST7789 layout: {e}")
-            return False
-
     def _update_st7789_display(self, system, freq, tgid, extra, settings):
-        """Update the ST7789 display by just changing text content (much faster)."""
+        """Update ST7789 display using fast PIL drawing (30+ FPS capable)."""
         if not self.st7789_available or self.st7789_display is None:
             return False
-            
-        # Initialize layout if not done yet
-        if self._st7789_splash is None:
-            if not self._init_st7789_layout():
-                return False
         
         try:
             from datetime import datetime
             
-            # Update text labels only (very fast)
-            self._st7789_text_labels['time'].text = datetime.now().strftime("%H:%M:%S")
+            # Create image
+            img = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))  # Black background
+            draw = ImageDraw.Draw(img)
             
-            system_text = system[:25] if system else "No System"
-            self._st7789_text_labels['system'].text = system_text
+            # Colors (RGB tuples)
+            colors = {
+                'orange': (255, 165, 0),
+                'yellow': (255, 255, 0), 
+                'blue': (0, 100, 255),
+                'white': (255, 255, 255),
+                'black': (0, 0, 0),
+                'red': (255, 0, 0),
+                'green': (0, 255, 0)
+            }
             
-            # Department info
+            # Header bar (orange)
+            draw.rectangle([0, 0, self.width, 30], fill=colors['orange'])
+            
+            # Timestamp (top right)
+            now_str = datetime.now().strftime("%H:%M:%S")
+            draw.text((self.width - 60, 8), now_str, fill=colors['black'], font=self.font_small)
+            
+            # Connection status indicator (top left)
+            status_color = colors['red'] if system == "Offline" else colors['green']
+            draw.rectangle([5, 5, 20, 25], fill=status_color)
+            
+            # System name bar
+            draw.rectangle([0, 30, self.width, 70], fill=colors['orange'])
+            system_text = system[:30] if system else "No System"
+            draw.text((10, 45), system_text, fill=colors['black'], font=self.font_med)
+            
+            # Department/Agency bar
             department = "Scanning..."
+            dept_color = colors['yellow']
             encrypted = bool(extra.get('encrypted'))
             
             if tgid and self.talkgroup_manager and not encrypted:
@@ -472,12 +417,24 @@ class DisplayManager:
                     description = tg_info['description']
                     if description:
                         department = f"{department} - {description}"
+                    
+                    # Color code by priority
+                    priority = tg_info.get('priority', 'Medium')
+                    if priority == 'High':
+                        dept_color = colors['red']
+                    elif priority == 'Medium':
+                        dept_color = colors['orange']
+                    else:
+                        dept_color = colors['green']
                 else:
                     department = f"TGID {tgid} - Unknown"
             elif encrypted:
                 department = "Encrypted"
+                dept_color = colors['orange']
             
-            self._st7789_text_labels['dept'].text = department[:30]
+            draw.rectangle([0, 70, self.width, 110], fill=dept_color)
+            dept_text = department[:35] if len(department) > 35 else department
+            draw.text((10, 85), dept_text, fill=colors['black'], font=self.font_med)
             
             # Talkgroup info
             if tgid:
@@ -494,28 +451,34 @@ class DisplayManager:
                         tag = f"TGID: {tgid}"
             else:
                 tag = "Scanning..."
-            
-            self._st7789_text_labels['tgid'].text = tag[:35]
+                
+            draw.text((10, 120), tag[:40], fill=colors['white'], font=self.font_small)
             
             # Frequency
             freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
-            self._st7789_text_labels['freq'].text = freq_text
+            draw.text((10, 140), freq_text, fill=colors['white'], font=self.font_small)
             
             # System info
             nac = extra.get('nac', '--')
-            wacn = extra.get('wacn', '--')
+            wacn = extra.get('wacn', '--') 
             sysid = extra.get('sysid', '--')
             site_info = f"NAC:{nac} WACN:{wacn} SYS:{sysid}"
-            self._st7789_text_labels['info'].text = site_info[:35]
+            draw.text((10, 160), site_info[:40], fill=colors['white'], font=self.font_small)
             
-            # Status
+            # Status bar at bottom
+            draw.rectangle([0, self.height - 30, self.width, self.height], fill=colors['blue'])
+            
             volume = settings.get('volume_level', 0)
             mute_status = "MUTE" if settings.get('mute') else f"VOL:{volume}"
             rec_status = "REC" if settings.get('recording') else ""
             status_text = f"{mute_status} | SQL:2"
             if rec_status:
                 status_text += f" | {rec_status}"
-            self._st7789_text_labels['status_text'].text = status_text[:30]
+                
+            draw.text((10, self.height - 22), status_text[:35], fill=colors['white'], font=self.font_small)
+            
+            # Push to display (this is the fast part!)
+            self.st7789_display.display(img)
                 
             return True
             
@@ -877,10 +840,8 @@ class DisplayManager:
             # Clear ST7789 display
             if self.st7789_available and self.st7789_display is not None:
                 try:
-                    import displayio
-                    # Create a black screen
-                    splash = displayio.Group()
-                    self.st7789_display.root_group = splash
+                    black_image = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
+                    self.st7789_display.display(black_image)
                 except Exception as e:
                     logging.debug(f"Error clearing ST7789 display: {e}")
             
@@ -894,27 +855,17 @@ class DisplayManager:
     def cleanup(self):
         """Clean up display resources"""
         try:
-            # Release ST7789 display resources
+            # Clean up ST7789 display
             if self.st7789_available and self.st7789_display is not None:
                 try:
-                    import displayio
-                    import time
-                    
-                    # Clear the display first
-                    splash = displayio.Group()
-                    self.st7789_display.root_group = splash
-                    
-                    # Give background thread time to process
-                    time.sleep(0.1)
-                    
-                    # Release all displays
-                    displayio.release_displays()
+                    # Clear display
+                    black_image = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
+                    self.st7789_display.display(black_image)
                     self.st7789_display = None
                     self.st7789_available = False
-                    
                     logging.info("ST7789 display cleaned up successfully")
                 except Exception as e:
-                    logging.debug(f"Error releasing ST7789 display: {e}")
+                    logging.debug(f"Error cleaning up ST7789 display: {e}")
                     
         except Exception as e:
             logging.error(f"Error in DisplayManager cleanup: {e}")
@@ -933,36 +884,24 @@ class DisplayManager:
             # ST7789 message
             if self.st7789_available and self.st7789_display is not None:
                 try:
-                    import displayio
-                    from adafruit_display_text import label
-                    from adafruit_display_shapes.rect import Rect
-                    import terminalio
+                    # Create message image
+                    img = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
+                    draw = ImageDraw.Draw(img)
                     
-                    colors = {
-                        'black': 0x0000,
-                        'white': 0xFFFF,
-                        'orange': 0xFD20
-                    }
+                    # Title (centered, orange)
+                    title_bbox = draw.textbbox((0, 0), title, font=self.font_large)
+                    title_width = title_bbox[2] - title_bbox[0]
+                    title_x = (self.width - title_width) // 2
+                    draw.text((title_x, 100), title, fill=(255, 165, 0), font=self.font_large)
                     
-                    # Create message display
-                    splash = displayio.Group()
+                    # Message (centered, white)
+                    msg_bbox = draw.textbbox((0, 0), message, font=self.font_med)
+                    msg_width = msg_bbox[2] - msg_bbox[0]
+                    msg_x = (self.width - msg_width) // 2
+                    draw.text((msg_x, 140), message, fill=(255, 255, 255), font=self.font_med)
                     
-                    # Black background
-                    bg = Rect(0, 0, self.width, self.height, fill=colors['black'])
-                    splash.append(bg)
-                    
-                    # Title (centered)
-                    title_label = label.Label(terminalio.FONT, text=title[:30], color=colors['orange'], 
-                                            x=(self.width - len(title) * 6) // 2, y=100)
-                    splash.append(title_label)
-                    
-                    # Message (centered)
-                    message_label = label.Label(terminalio.FONT, text=message[:35], color=colors['white'],
-                                              x=(self.width - len(message) * 6) // 2, y=130)
-                    splash.append(message_label)
-                    
-                    # Show on display
-                    self.st7789_display.root_group = splash
+                    # Display the message
+                    self.st7789_display.display(img)
                     
                 except Exception as e:
                     logging.debug(f"Error showing ST7789 message: {e}")
