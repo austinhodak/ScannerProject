@@ -85,12 +85,12 @@ class DisplayManager:
         self.rgb_display_available = False
         self.rgb_display = None
         # ST7789 initialization will be done later via init_st7789() when settings are available
-        
+
         # Pre-create display elements for better performance
         self._st7789_splash = None
         self._st7789_text_labels = {}
         self._st7789_bars = {}
-        
+
         # Color scheme
         self.colors = {
             'background': 'black',
@@ -133,7 +133,9 @@ class DisplayManager:
         Preference order can be controlled with settings['tft_driver'] in {'rgb','displayio'} (default 'rgb').
         """
         preferred_driver = (
-            str(settings.get("tft_driver", "rgb")).lower() if settings else "rgb"
+            str(settings.get("tft_driver", "displayio")).lower()
+            if settings
+            else "displayio"
         )
 
         # Try RGB driver if preferred
@@ -189,6 +191,15 @@ class DisplayManager:
             try:
                 displayio.release_displays()
                 spi = board.SPI()
+                # Match working example: configure SPI to 24MHz
+                try:
+                    if spi.try_lock():
+                        spi.configure(baudrate=24_000_000)
+                finally:
+                    try:
+                        spi.unlock()
+                    except Exception:
+                        pass
 
                 cs_pin_name = settings.get("st7789_cs_pin", "D5") if settings else "D5"
                 dc_pin_name = (
@@ -205,11 +216,12 @@ class DisplayManager:
                 display_bus = FourWire(
                     spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst
                 )
+                rotation = int(settings.get("tft_rotation", 90)) if settings else 90
                 self.st7789_display = adafruit_st7789.ST7789(
                     display_bus,
                     width=self.width,
                     height=self.height,
-                    rotation=0,
+                    rotation=rotation,
                     rowstart=0,
                     colstart=0,
                 )
@@ -234,17 +246,17 @@ class DisplayManager:
         try:
             displayio.release_displays()
             spi = board.SPI()
-            
+
             # Get pin assignments from settings with defaults
             cs_pin_name = settings.get('st7789_cs_pin', 'CE0')
             dc_pin_name = settings.get('st7789_dc_pin', 'D25')
             rst_pin_name = settings.get('st7789_rst_pin', 'D24')
-            
+
             # Convert pin names to board objects
             tft_cs = getattr(board, cs_pin_name, board.CE0)
             tft_dc = getattr(board, dc_pin_name, board.D25)
             tft_rst = getattr(board, rst_pin_name, board.D24)
-            
+
             display_bus = FourWire(spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst)
             self.st7789_display = adafruit_st7789.ST7789(
                 display_bus, 
@@ -495,68 +507,68 @@ class DisplayManager:
         """Initialize the ST7789 display layout once for better performance."""
         if not self.st7789_available or self.st7789_display is None:
             return False
-            
+
         try:
             import displayio
             from adafruit_display_text import label
             import terminalio
-            
+
             # Create main group once
             self._st7789_splash = displayio.Group()
-            
+
             # Create background bitmap (more efficient than Rect for large areas)
             bg_bitmap = displayio.Bitmap(self.width, self.height, 1)
             bg_palette = displayio.Palette(1)
             bg_palette[0] = 0x0000  # Black
             bg_sprite = displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette, x=0, y=0)
             self._st7789_splash.append(bg_sprite)
-            
+
             # Create colored bar bitmaps
             header_bitmap = displayio.Bitmap(self.width, 30, 1)
             header_palette = displayio.Palette(1)
             header_palette[0] = 0xFD20  # Orange
             self._st7789_bars['header'] = displayio.TileGrid(header_bitmap, pixel_shader=header_palette, x=0, y=0)
             self._st7789_splash.append(self._st7789_bars['header'])
-            
+
             dept_bitmap = displayio.Bitmap(self.width, 40, 1)
             dept_palette = displayio.Palette(1)
             dept_palette[0] = 0xFFE0  # Yellow (default)
             self._st7789_bars['dept'] = displayio.TileGrid(dept_bitmap, pixel_shader=dept_palette, x=0, y=70)
             self._st7789_splash.append(self._st7789_bars['dept'])
-            
+
             status_bitmap = displayio.Bitmap(self.width, 30, 1)
             status_palette = displayio.Palette(1)
             status_palette[0] = 0x001F  # Blue
             self._st7789_bars['status'] = displayio.TileGrid(status_bitmap, pixel_shader=status_palette, x=0, y=self.height-30)
             self._st7789_splash.append(self._st7789_bars['status'])
-            
+
             # Create text labels (reuse these, just update text)
             self._st7789_text_labels['time'] = label.Label(terminalio.FONT, text="--:--:--", color=0x0000, x=self.width-80, y=15)
             self._st7789_splash.append(self._st7789_text_labels['time'])
-            
+
             self._st7789_text_labels['system'] = label.Label(terminalio.FONT, text="System", color=0x0000, x=10, y=50)
             self._st7789_splash.append(self._st7789_text_labels['system'])
-            
+
             self._st7789_text_labels['dept'] = label.Label(terminalio.FONT, text="Department", color=0x0000, x=10, y=90)
             self._st7789_splash.append(self._st7789_text_labels['dept'])
-            
+
             self._st7789_text_labels['tgid'] = label.Label(terminalio.FONT, text="TGID Info", color=0xFFFF, x=10, y=130)
             self._st7789_splash.append(self._st7789_text_labels['tgid'])
-            
+
             self._st7789_text_labels['freq'] = label.Label(terminalio.FONT, text="Frequency", color=0xFFFF, x=10, y=150)
             self._st7789_splash.append(self._st7789_text_labels['freq'])
-            
+
             self._st7789_text_labels['info'] = label.Label(terminalio.FONT, text="System Info", color=0xFFFF, x=10, y=170)
             self._st7789_splash.append(self._st7789_text_labels['info'])
-            
+
             self._st7789_text_labels['status_text'] = label.Label(terminalio.FONT, text="Status", color=0xFFFF, x=10, y=self.height-15)
             self._st7789_splash.append(self._st7789_text_labels['status_text'])
-            
+
             # Set the display group
             self.st7789_display.root_group = self._st7789_splash
-            
+
             return True
-            
+
         except Exception as e:
             logging.error(f"Error initializing ST7789 layout: {e}")
             return False
@@ -565,21 +577,21 @@ class DisplayManager:
         """Update the ST7789 display by just changing text content (much faster)."""
         if not self.st7789_available or self.st7789_display is None:
             return False
-            
+
         # Initialize layout if not done yet
         if self._st7789_splash is None:
             if not self._init_st7789_layout():
                 return False
-        
+
         try:
             from datetime import datetime
-            
+
             # Update text labels only (very fast)
             self._st7789_text_labels['time'].text = datetime.now().strftime("%H:%M:%S")
-            
+
             system_text = system[:25] if system else "No System"
             self._st7789_text_labels['system'].text = system_text
-            
+
             # Department info
             department = "Scanning..."
             encrypted = bool(extra.get('encrypted'))
@@ -595,9 +607,9 @@ class DisplayManager:
                     department = f"TGID {tgid} - Unknown"
             elif encrypted:
                 department = "Encrypted"
-            
+
             self._st7789_text_labels['dept'].text = department[:30]
-            
+
             # Talkgroup info
             if tgid:
                 if encrypted:
@@ -613,20 +625,20 @@ class DisplayManager:
                         tag = f"TGID: {tgid}"
             else:
                 tag = "Scanning..."
-            
+
             self._st7789_text_labels['tgid'].text = tag[:35]
-            
+
             # Frequency
             freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
             self._st7789_text_labels['freq'].text = freq_text
-            
+
             # System info
             nac = extra.get('nac', '--')
             wacn = extra.get('wacn', '--') 
             sysid = extra.get('sysid', '--')
             site_info = f"NAC:{nac} WACN:{wacn} SYS:{sysid}"
             self._st7789_text_labels['info'].text = site_info[:35]
-            
+
             # Status
             volume = settings.get('volume_level', 0)
             mute_status = "MUTE" if settings.get('mute') else f"VOL:{volume}"
@@ -635,9 +647,9 @@ class DisplayManager:
             if rec_status:
                 status_text += f" | {rec_status}"
             self._st7789_text_labels['status_text'].text = status_text[:30]
-                
+
             return True
-            
+
         except Exception as e:
             logging.error(f"Error updating ST7789 display: {e}")
             return False
