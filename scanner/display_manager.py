@@ -142,11 +142,8 @@ class DisplayManager:
                 colstart=0
             )
             
-            # Set available flag before initializing fast display elements
+            # Set available flag
             self.st7789_available = True
-            
-            # Create fast update display structure
-            self._init_fast_display()
             logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) on pins CS:{cs_pin_name}, DC:{dc_pin_name}, RST:{rst_pin_name}")
             
         except Exception as e:
@@ -481,22 +478,140 @@ class DisplayManager:
             pass
 
     def _update_st7789_display(self, system, freq, tgid, extra, settings):
-        """Update ST7789 display using fast displayio text elements."""
+        """Update ST7789 display using PIL drawing with image method."""
         if not self.st7789_available or self.st7789_display is None:
             logging.debug(f"ST7789 not available: available={self.st7789_available}, display={self.st7789_display is not None}")
             return False
         
         logging.debug("Updating ST7789 display...")
         
-        # Use fast displayio approach
-        if self._display_group and self._text_labels:
-            try:
-                return self._update_fast_displayio(system, freq, tgid, extra, settings)
-            except Exception as e:
-                logging.error(f"Fast displayio update failed: {e}")
-                return False
-        else:
-            logging.error("Fast displayio elements not initialized")
+        try:
+            from datetime import datetime
+            
+            # Create image
+            img = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))  # Black background
+            draw = ImageDraw.Draw(img)
+            
+            # Colors (RGB tuples)
+            colors = {
+                'orange': (255, 165, 0),
+                'yellow': (255, 255, 0), 
+                'blue': (0, 100, 255),
+                'white': (255, 255, 255),
+                'black': (0, 0, 0),
+                'red': (255, 0, 0),
+                'green': (0, 255, 0)
+            }
+            
+            # Header bar (orange)
+            draw.rectangle([0, 0, self.width, 30], fill=colors['orange'])
+            
+            # Timestamp (top right)
+            now_str = datetime.now().strftime("%H:%M:%S")
+            draw.text((self.width - 60, 8), now_str, fill=colors['black'], font=self.font_small)
+            
+            # Connection status indicator (top left)
+            status_color = colors['red'] if system == "Offline" else colors['green']
+            draw.rectangle([5, 5, 20, 25], fill=status_color)
+            
+            # System name bar
+            draw.rectangle([0, 30, self.width, 70], fill=colors['orange'])
+            system_text = system[:30] if system else "No System"
+            draw.text((10, 45), system_text, fill=colors['black'], font=self.font_med)
+            
+            # Department/Agency bar
+            department = "Scanning..."
+            dept_color = colors['yellow']
+            encrypted = bool(extra.get('encrypted'))
+            
+            if tgid and self.talkgroup_manager and not encrypted:
+                tg_info = self.talkgroup_manager.lookup(tgid)
+                if tg_info:
+                    department = tg_info['department']
+                    description = tg_info['description']
+                    if description:
+                        department = f"{department} - {description}"
+                    
+                    # Color code by priority
+                    priority = tg_info.get('priority', 'Medium')
+                    if priority == 'High':
+                        dept_color = colors['red']
+                    elif priority == 'Medium':
+                        dept_color = colors['orange']
+                    else:
+                        dept_color = colors['green']
+                else:
+                    department = f"TGID {tgid} - Unknown"
+            elif encrypted:
+                department = "Encrypted"
+                dept_color = colors['orange']
+            
+            draw.rectangle([0, 70, self.width, 110], fill=dept_color)
+            dept_text = department[:35] if len(department) > 35 else department
+            draw.text((10, 85), dept_text, fill=colors['black'], font=self.font_med)
+            
+            # Talkgroup info
+            if tgid:
+                if encrypted:
+                    tag = "Encrypted"
+                elif extra.get('active'):
+                    srcaddr = extra.get('srcaddr', 0)
+                    tag = f"TGID: {tgid} | SRC: {srcaddr}"
+                else:
+                    last_activity = extra.get('last_activity')
+                    if last_activity:
+                        tag = f"TGID: {tgid} (last: {last_activity}s)"
+                    else:
+                        tag = f"TGID: {tgid}"
+            else:
+                tag = "Scanning..."
+                
+            draw.text((10, 120), tag[:40], fill=colors['white'], font=self.font_small)
+            
+            # Frequency
+            freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
+            draw.text((10, 140), freq_text, fill=colors['white'], font=self.font_small)
+            
+            # System info
+            nac = extra.get('nac', '--')
+            wacn = extra.get('wacn', '--') 
+            sysid = extra.get('sysid', '--')
+            site_info = f"NAC:{nac} WACN:{wacn} SYS:{sysid}"
+            draw.text((10, 160), site_info[:40], fill=colors['white'], font=self.font_small)
+            
+            # Status bar at bottom
+            draw.rectangle([0, self.height - 30, self.width, self.height], fill=colors['blue'])
+            
+            volume = settings.get('volume_level', 0)
+            mute_status = "MUTE" if settings.get('mute') else f"VOL:{volume}"
+            rec_status = "REC" if settings.get('recording') else ""
+            status_text = f"{mute_status} | SQL:2"
+            if rec_status:
+                status_text += f" | {rec_status}"
+                
+            draw.text((10, self.height - 22), status_text[:35], fill=colors['white'], font=self.font_small)
+            
+            # Push to display using the image method that was working
+            logging.debug("Pushing image to ST7789 display...")
+            if hasattr(self.st7789_display, 'image'):
+                self.st7789_display.image(img)
+            else:
+                # Fallback to root_group method
+                bitmap = displayio.Bitmap(self.width, self.height, 2)
+                palette = displayio.Palette(2)  
+                palette[0] = 0x000000
+                palette[1] = 0xFFFFFF
+                
+                tile_grid = displayio.TileGrid(bitmap, pixel_shader=palette)
+                group = displayio.Group()
+                group.append(tile_grid)
+                self.st7789_display.root_group = group
+            
+            logging.debug("ST7789 display update completed")
+            return True
+            
+        except Exception as e:
+            logging.error(f"Error updating ST7789 display: {e}")
             return False
     
     def _update_fast_displayio(self, system, freq, tgid, extra, settings):
