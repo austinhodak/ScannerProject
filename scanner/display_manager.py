@@ -591,42 +591,96 @@ class DisplayManager:
                 
             draw.text((10, self.height - 22), status_text[:35], fill=colors['white'], font=self.font_small)
             
-            # Convert PIL image to displayio format and push to display
-            logging.debug("Converting PIL image to displayio bitmap...")
+            # Use simple displayio elements instead of PIL conversion
+            logging.debug("Creating displayio elements...")
             
-            # Create bitmap with enough colors
-            bitmap = displayio.Bitmap(self.width, self.height, 65536)
-            palette = displayio.Palette(65536)
+            # Create main group
+            main_group = displayio.Group()
             
-            # Convert PIL image to bitmap
-            pixels = img.load()
-            color_map = {}
-            next_color_index = 0
+            # Create background bitmap for colored bars
+            bg_bitmap = displayio.Bitmap(self.width, self.height, 8)
+            bg_palette = displayio.Palette(8)
+            bg_palette[0] = 0x000000  # Black
+            bg_palette[1] = 0xFFA500  # Orange
+            bg_palette[2] = dept_color  # Dynamic department color
+            bg_palette[3] = 0x0064FF  # Blue
+            bg_palette[4] = 0xFF0000  # Red
+            bg_palette[5] = 0x00FF00  # Green
+            bg_palette[6] = 0xFFFF00  # Yellow
+            bg_palette[7] = 0xFFFFFF  # White
             
-            for y in range(self.height):
-                for x in range(self.width):
-                    r, g, b = pixels[x, y]
-                    # Convert to 16-bit color key
-                    color_key = (r & 0xF8, g & 0xFC, b & 0xF8)
-                    
-                    if color_key not in color_map:
-                        if next_color_index < 65536:
-                            palette[next_color_index] = color_key
-                            color_map[color_key] = next_color_index
-                            next_color_index += 1
+            # Fill background
+            for x in range(self.width):
+                for y in range(self.height):
+                    if y < 30:  # Header bar
+                        bg_bitmap[x, y] = 1  # Orange
+                    elif y < 70:  # System bar  
+                        bg_bitmap[x, y] = 1  # Orange
+                    elif y < 110:  # Department bar
+                        if dept_color == colors['red']:
+                            bg_bitmap[x, y] = 4  # Red
+                        elif dept_color == colors['orange']:
+                            bg_bitmap[x, y] = 1  # Orange
+                        elif dept_color == colors['green']:
+                            bg_bitmap[x, y] = 5  # Green
                         else:
-                            # Use closest existing color
-                            color_map[color_key] = 0
-                    
-                    bitmap[x, y] = color_map[color_key]
+                            bg_bitmap[x, y] = 6  # Yellow
+                    elif y >= self.height - 30:  # Status bar
+                        bg_bitmap[x, y] = 3  # Blue
+                    else:
+                        bg_bitmap[x, y] = 0  # Black
             
-            # Create tile grid and group
-            tile_grid = displayio.TileGrid(bitmap, pixel_shader=palette)
-            group = displayio.Group()
-            group.append(tile_grid)
+            # Add background
+            bg_tile = displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette)
+            main_group.append(bg_tile)
+            
+            # Add text elements
+            font = terminalio.FONT
+            
+            # Timestamp (header)
+            time_label = label.Label(font, text=now_str, color=0x000000)
+            time_label.anchor_point = (1.0, 0.0)
+            time_label.anchored_position = (self.width - 5, 8)
+            main_group.append(time_label)
+            
+            # System name
+            system_label = label.Label(font, text=system_text, color=0x000000, scale=2)
+            system_label.anchor_point = (0.0, 0.0)
+            system_label.anchored_position = (10, 40)
+            main_group.append(system_label)
+            
+            # Department
+            dept_label = label.Label(font, text=dept_text, color=0x000000, scale=2)
+            dept_label.anchor_point = (0.0, 0.0)
+            dept_label.anchored_position = (10, 78)
+            main_group.append(dept_label)
+            
+            # Talkgroup info
+            tg_label = label.Label(font, text=tag, color=0xFFFFFF)
+            tg_label.anchor_point = (0.0, 0.0)
+            tg_label.anchored_position = (10, 118)
+            main_group.append(tg_label)
+            
+            # Frequency
+            freq_label = label.Label(font, text=freq_text, color=0xFFFFFF)
+            freq_label.anchor_point = (0.0, 0.0)
+            freq_label.anchored_position = (10, 138)
+            main_group.append(freq_label)
+            
+            # System info
+            sys_label = label.Label(font, text=site_info, color=0xFFFFFF)
+            sys_label.anchor_point = (0.0, 0.0)
+            sys_label.anchored_position = (10, 158)
+            main_group.append(sys_label)
+            
+            # Status
+            status_label = label.Label(font, text=status_text, color=0xFFFFFF)
+            status_label.anchor_point = (0.0, 0.0)
+            status_label.anchored_position = (10, self.height - 22)
+            main_group.append(status_label)
             
             # Update display
-            self.st7789_display.root_group = group
+            self.st7789_display.root_group = main_group
             logging.debug("ST7789 display update completed")
             return True
             
