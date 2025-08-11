@@ -186,12 +186,13 @@ class BaseDisplay(ABC):
 class TFTDisplay(BaseDisplay):
     """Driver for the ST7789 TFT display using PIL for robust drawing."""
 
-    def __init__(self, rotation=0, settings=None):
+    def __init__(self, rotation=0):
         super().__init__()
         if not ST7789_AVAILABLE:
-            logging.warning("ST7789 libraries not found, TFT will be unavailable.")
+            logging.debug("ST7789 libraries not found, TFT will be unavailable.")
             return
 
+        # Prepare properties but do not initialize hardware yet
         self.width, self.height = (320, 240) if rotation in [0, 180] else (240, 320)
         self.rotation = rotation
         self.display = None
@@ -204,13 +205,14 @@ class TFTDisplay(BaseDisplay):
             "header": "orange",
             "status": "blue",
         }
-        self._init_hardware(settings)
 
-    def _init_hardware(self, settings):
+    def initialize_hardware(self, settings):
+        """Initializes the physical display hardware. Called by DisplayManager."""
+        if not ST7789_AVAILABLE:
+            return
         try:
             displayio.release_displays()
             spi = board.SPI()
-            # Use safe .get() with defaults from a settings object if available
             s = settings or {}
             cs_pin = getattr(board, s.get("st7789_cs_pin", "D5"))
             dc_pin = getattr(board, s.get("st7789_dc_pin", "D25"))
@@ -231,7 +233,7 @@ class TFTDisplay(BaseDisplay):
             self.is_available = False
 
     def update(self, view_model: DisplayViewModel, force_redraw=False):
-        if not self.is_available or not self._should_update(0.5) and not force_redraw:
+        if not self.is_available or (not self._should_update(0.5) and not force_redraw):
             return
 
         try:
@@ -240,7 +242,6 @@ class TFTDisplay(BaseDisplay):
             )
             draw = ImageDraw.Draw(img)
 
-            # Header
             draw.rectangle((0, 0, self.width, 30), fill=self.colors["header"])
             draw.text((5, 5), "SCANNER", fill="black", font=self.font_med)
             draw.text(
@@ -250,7 +251,6 @@ class TFTDisplay(BaseDisplay):
                 font=self.font_med,
             )
 
-            # System Name
             draw.rectangle(
                 (0, 30, self.width, 70), fill=view_model.status_indicator_color
             )
@@ -258,13 +258,11 @@ class TFTDisplay(BaseDisplay):
                 (10, 35), view_model.system_name, fill="black", font=self.font_large
             )
 
-            # Department / Agency
             draw.rectangle((0, 70, self.width, 110), fill=view_model.department_color)
             draw.text(
                 (10, 75), view_model.department_text, fill="black", font=self.font_large
             )
 
-            # Main content area
             draw.text(
                 (10, 120),
                 view_model.talkgroup_line,
@@ -284,7 +282,6 @@ class TFTDisplay(BaseDisplay):
                 font=self.font_med,
             )
 
-            # Status Bar
             draw.rectangle(
                 (0, self.height - 30, self.width, self.height),
                 fill=self.colors["status"],
@@ -296,7 +293,6 @@ class TFTDisplay(BaseDisplay):
                 font=self.font_med,
             )
 
-            # Push to display
             self.display.image(img)
         except Exception as e:
             logging.error(f"Error updating TFT display: {e}")
@@ -354,27 +350,22 @@ class OLEDDisplay(BaseDisplay):
             self.is_available = False
 
     def update(self, view_model: DisplayViewModel, force_redraw=False):
-        if not self.is_available or not self._should_update(0.1) and not force_redraw:
+        if not self.is_available or (not self._should_update(0.1) and not force_redraw):
             return
 
         try:
             self.display.fill(0)
-            # Line 1: Time and Signal
             self.display.text(datetime.now().strftime("%H:%M:%S"), 0, 0, 1)
             self._draw_progress_bar(88, 0, 40, 8, view_model.signal_quality)
 
             if view_model.is_active_transmission:
-                # Line 2: Talkgroup Description (scrolling would go here)
-                tg_text = view_model.department_text[:21]  # Truncate for now
+                tg_text = view_model.department_text[:21]
                 self.display.text(tg_text, 0, 12, 1)
-                # Line 3: Radio ID
                 self.display.text(view_model.radio_id_text[:21], 0, 24, 1)
             else:
-                # Show scanning status
                 self.display.text("Scanning...", 0, 12, 1)
                 self.display.text(view_model.idle_status_text[:21], 0, 24, 1)
 
-            # Status line at bottom
             self.display.text(view_model.status_bar_text[:21], 0, 54, 1)
             self.display.show()
         except Exception as e:
@@ -410,54 +401,62 @@ class DisplayManager:
     Manages all display devices by orchestrating the ViewModel and Display Drivers.
     """
 
-    def __init__(self, talkgroup_manager=None, settings=None, rotation=0):
-        # The ViewModel is the single source of truth for display data
+    def __init__(self, talkgroup_manager=None, rotation=0):
         self.view_model = DisplayViewModel(talkgroup_manager)
-
-        # A list to hold all available display driver instances
         self.displays = []
 
-        # Initialize and add available displays
-        tft = TFTDisplay(rotation=rotation, settings=settings)
-        if tft.is_available:
-            self.displays.append(tft)
+        # Create driver instances but do not initialize hardware yet
+        tft = TFTDisplay(rotation=rotation)
+        self.displays.append(tft)
 
         oled = OLEDDisplay()
-        if oled.is_available:
-            self.displays.append(oled)
+        self.displays.append(oled)
 
-        if not self.displays:
+    def initialize_displays(self, settings):
+        """Initializes hardware for all managed displays that require it."""
+        logging.info("Initializing display hardware...")
+        for display in self.displays:
+            # Check if the display has a specific initializer method
+            if hasattr(display, "initialize_hardware"):
+                try:
+                    display.initialize_hardware(settings)
+                except Exception as e:
+                    logging.error(f"Error initializing {type(display).__name__}: {e}")
+
+        # Log a warning if no displays ended up being available
+        if not any(d.is_available for d in self.displays):
             logging.warning(
                 "No displays were initialized. DisplayManager will be inactive."
             )
 
     def update(self, system, freq, tgid, extra, settings):
         """High-level update method."""
-        # 1. Update the ViewModel with the latest data.
         self.view_model.update(system, freq, tgid, extra, settings)
 
-        # 2. Check if a redraw is needed to save CPU cycles.
         force_update = extra.get("force_redraw", False)
         if not self.view_model.has_changed() and not force_update:
             return
 
-        # 3. Tell each available display to redraw itself from the ViewModel.
         for display in self.displays:
-            try:
-                display.update(self.view_model, force_redraw=force_update)
-            except Exception as e:
-                logging.error(f"Failed to update display {type(display).__name__}: {e}")
+            if display.is_available:
+                try:
+                    display.update(self.view_model, force_redraw=force_update)
+                except Exception as e:
+                    logging.error(
+                        f"Failed to update display {type(display).__name__}: {e}"
+                    )
 
     def clear(self):
         """Clears all available displays."""
         for display in self.displays:
-            display.clear()
+            if display.is_available:
+                display.clear()
 
     def show_message(self, title, message, duration=3):
         """Shows a message on all available displays."""
         for display in self.displays:
-            display.show_message(title, message, duration)
-        # Hold the message on screen
+            if display.is_available:
+                display.show_message(title, message, duration)
         if duration > 0:
             time.sleep(duration)
 
