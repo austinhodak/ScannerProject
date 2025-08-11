@@ -142,10 +142,11 @@ class DisplayManager:
                 colstart=0
             )
             
+            # Set available flag before initializing fast display elements
+            self.st7789_available = True
+            
             # Create fast update display structure
             self._init_fast_display()
-            
-            self.st7789_available = True
             logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) on pins CS:{cs_pin_name}, DC:{dc_pin_name}, RST:{rst_pin_name}")
             
         except Exception as e:
@@ -155,7 +156,9 @@ class DisplayManager:
     
     def _init_fast_display(self):
         """Initialize fast displayio elements for high-performance updates."""
+        logging.info(f"_init_fast_display called: st7789_available={self.st7789_available}, display={self.st7789_display is not None}")
         if not self.st7789_available or self.st7789_display is None:
+            logging.warning("ST7789 not available for fast display init")
             return
             
         try:
@@ -244,7 +247,9 @@ class DisplayManager:
             logging.info("Fast displayio elements initialized successfully")
             
         except Exception as e:
-            logging.warning(f"Could not initialize fast displayio elements: {e}")
+            logging.error(f"Could not initialize fast displayio elements: {e}")
+            import traceback
+            logging.error(f"Traceback: {traceback.format_exc()}")
             # Fall back to PIL-based drawing
             self._display_group = None
             self._text_labels = {}
