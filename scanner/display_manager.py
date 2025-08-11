@@ -591,14 +591,38 @@ class DisplayManager:
 
             draw.text((10, self.height - 22), status_text[:35], fill=colors['white'], font=self.font_small)
 
-            # Push composed PIL image directly to the ST7789 display to avoid
-            # any text corruption issues with displayio Label on this panel.
+            # Push composed PIL image via displayio by saving to BMP and
+            # displaying it as an OnDiskBitmap TileGrid. This refreshes the
+            # entire screen and avoids label rendering issues.
             try:
-                self.st7789_display.display(img)
-                logging.debug("ST7789 display update completed (PIL image)")
+                bmp_path = "/tmp/scanner_tft.bmp"
+                img.save(bmp_path, format="BMP")
+
+                # Close previous file handle if present to avoid leaks
+                try:
+                    prev_file = getattr(self, "_current_bmp_file", None)
+                    if prev_file:
+                        prev_file.close()
+                except Exception:
+                    pass
+
+                bmp_file = open(bmp_path, "rb")
+                odb = displayio.OnDiskBitmap(bmp_file)
+                tile = displayio.TileGrid(odb, pixel_shader=odb.pixel_shader)
+                group = displayio.Group()
+                group.append(tile)
+                self.st7789_display.root_group = group
+
+                # Keep references so the file stays open while displayed
+                self._current_bmp_file = bmp_file
+                self._current_odb = odb
+                self._current_tilegrid = tile
+                self._current_group = group
+
+                logging.debug("ST7789 display update completed (OnDiskBitmap)")
                 return True
             except Exception as display_err:
-                logging.error(f"Direct image display failed: {display_err}")
+                logging.error(f"Bitmap display failed: {display_err}")
                 return False
 
         except Exception as e:
