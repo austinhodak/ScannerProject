@@ -11,10 +11,22 @@ import adafruit_ssd1306
 import logging
 
 try:
-    import st7789
+    import displayio
+    from fourwire import FourWire
+    import adafruit_st7789
+    from adafruit_display_text import label
+    import terminalio
     ST7789_AVAILABLE = True
 except ImportError:
-    ST7789_AVAILABLE = False
+    try:
+        import displayio
+        from displayio import FourWire
+        import adafruit_st7789
+        from adafruit_display_text import label
+        import terminalio
+        ST7789_AVAILABLE = True
+    except ImportError:
+        ST7789_AVAILABLE = False
 
 class DisplayManager:
     def __init__(self, talkgroup_manager=None, rotation=0):
@@ -60,6 +72,10 @@ class DisplayManager:
         self.st7789_display = None
         # ST7789 initialization will be done later via init_st7789() when settings are available
         
+        # Pre-create display elements for fast updates
+        self._display_group = None
+        self._text_labels = {}
+        
         # Color scheme
         self.colors = {
             'background': 'black',
@@ -98,50 +114,111 @@ class DisplayManager:
             self.oled = None
     
     def init_st7789(self, settings):
-        """Initialize ST7789 display with high-performance st7789 library."""
+        """Initialize ST7789 display with fast displayio."""
         if not ST7789_AVAILABLE:
             return
         
         try:
+            displayio.release_displays()
+            spi = board.SPI()
+            
             # Get pin assignments from settings with defaults
             cs_pin_name = settings.get('st7789_cs_pin', 'D5')
-            dc_pin_name = settings.get('st7789_dc_pin', 'D25') 
+            dc_pin_name = settings.get('st7789_dc_pin', 'D25')
             rst_pin_name = settings.get('st7789_rst_pin', 'D27')
             
-            # Convert pin names to GPIO numbers
-            import board
-            cs_pin = getattr(board, cs_pin_name)._pin.id if hasattr(getattr(board, cs_pin_name), '_pin') else 5
-            dc_pin = getattr(board, dc_pin_name)._pin.id if hasattr(getattr(board, dc_pin_name), '_pin') else 25
-            rst_pin = getattr(board, rst_pin_name)._pin.id if hasattr(getattr(board, rst_pin_name), '_pin') else 27
+            # Convert pin names to board objects
+            tft_cs = getattr(board, cs_pin_name, board.D5)
+            tft_dc = getattr(board, dc_pin_name, board.D25)
+            tft_rst = getattr(board, rst_pin_name, board.D27)
             
-            # Initialize ST7789 with high-speed SPI
-            self.st7789_display = st7789.ST7789(
-                port=0,              # SPI port
-                cs=cs_pin,          # CS pin (can also use st7789.BG_SPI_CS_FRONT for certain pins)
-                dc=dc_pin,          # DC pin  
-                rst=rst_pin,        # Reset pin
-                backlight=None,     # No backlight control for now
-                spi_speed_hz=80000000,  # 80MHz - very fast!
-                width=self.width,
+            display_bus = FourWire(spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst)
+            self.st7789_display = adafruit_st7789.ST7789(
+                display_bus, 
+                width=self.width, 
                 height=self.height,
-                rotation=0,         # Portrait mode
-                invert=False,       # Color inversion
-                offset_left=0,      # Display offset
-                offset_top=0        # Display offset
+                rotation=0,  # Portrait mode
+                rowstart=0,
+                colstart=0
             )
             
-            self.st7789_available = True
-            logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) at 80MHz")
-            logging.info(f"ST7789 pins: CS=GPIO{cs_pin}, DC=GPIO{dc_pin}, RST=GPIO{rst_pin}")
+            # Create fast update display structure
+            self._init_fast_display()
             
-            # Clear the display
-            black_image = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
-            self.st7789_display.display(black_image)
+            self.st7789_available = True
+            logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) on pins CS:{cs_pin_name}, DC:{dc_pin_name}, RST:{rst_pin_name}")
             
         except Exception as e:
             logging.warning(f"ST7789 display not available: {e}")
             self.st7789_available = False
             self.st7789_display = None
+    
+    def _init_fast_display(self):
+        """Initialize fast displayio elements for high-performance updates."""
+        if not self.st7789_available or self.st7789_display is None:
+            return
+            
+        try:
+            # Create main display group
+            self._display_group = displayio.Group()
+            
+            # Create color palette for fast drawing
+            palette = displayio.Palette(8)
+            palette[0] = 0x000000  # Black (background)
+            palette[1] = 0xFFFFFF  # White (text)
+            palette[2] = 0xFFA500  # Orange (headers)
+            palette[3] = 0xFFFF00  # Yellow (department)
+            palette[4] = 0x0064FF  # Blue (status)
+            palette[5] = 0xFF0000  # Red (high priority)
+            palette[6] = 0x00FF00  # Green (low priority)
+            palette[7] = 0x808080  # Gray (inactive)
+            
+            # Pre-create text labels for different display elements
+            font = terminalio.FONT
+            
+            # Header elements
+            self._text_labels['timestamp'] = label.Label(font, text="", color=0xFFFFFF)
+            self._text_labels['timestamp'].anchor_point = (1.0, 0.0)  # Top-right anchor
+            self._text_labels['timestamp'].anchored_position = (self.width - 5, 5)
+            
+            self._text_labels['system'] = label.Label(font, text="", color=0x000000, scale=2)
+            self._text_labels['system'].anchor_point = (0.0, 0.0)
+            self._text_labels['system'].anchored_position = (10, 45)
+            
+            self._text_labels['department'] = label.Label(font, text="", color=0x000000, scale=2)
+            self._text_labels['department'].anchor_point = (0.0, 0.0) 
+            self._text_labels['department'].anchored_position = (10, 85)
+            
+            self._text_labels['talkgroup'] = label.Label(font, text="", color=0xFFFFFF)
+            self._text_labels['talkgroup'].anchor_point = (0.0, 0.0)
+            self._text_labels['talkgroup'].anchored_position = (10, 120)
+            
+            self._text_labels['frequency'] = label.Label(font, text="", color=0xFFFFFF)
+            self._text_labels['frequency'].anchor_point = (0.0, 0.0)
+            self._text_labels['frequency'].anchored_position = (10, 140)
+            
+            self._text_labels['system_info'] = label.Label(font, text="", color=0xFFFFFF)
+            self._text_labels['system_info'].anchor_point = (0.0, 0.0)
+            self._text_labels['system_info'].anchored_position = (10, 160)
+            
+            self._text_labels['status'] = label.Label(font, text="", color=0xFFFFFF)
+            self._text_labels['status'].anchor_point = (0.0, 0.0)
+            self._text_labels['status'].anchored_position = (10, self.height - 22)
+            
+            # Add all labels to the display group
+            for text_label in self._text_labels.values():
+                self._display_group.append(text_label)
+            
+            # Set the display group
+            self.st7789_display.root_group = self._display_group
+            
+            logging.info("Fast displayio elements initialized successfully")
+            
+        except Exception as e:
+            logging.warning(f"Could not initialize fast displayio elements: {e}")
+            # Fall back to PIL-based drawing
+            self._display_group = None
+            self._text_labels = {}
     
     def _format_signal_bars(self, extra) -> str:
         """Return signal bars like |||| using signal_quality in range [0, 1]."""
@@ -370,10 +447,21 @@ class DisplayManager:
             pass
 
     def _update_st7789_display(self, system, freq, tgid, extra, settings):
-        """Update ST7789 display using fast PIL drawing (30+ FPS capable)."""
+        """Update ST7789 display using fast displayio elements or PIL fallback."""
         if not self.st7789_available or self.st7789_display is None:
+            logging.debug(f"ST7789 not available: available={self.st7789_available}, display={self.st7789_display is not None}")
             return False
         
+        logging.debug("Updating ST7789 display...")
+        
+        # Try fast displayio approach first
+        if self._display_group and self._text_labels:
+            try:
+                return self._update_fast_displayio(system, freq, tgid, extra, settings)
+            except Exception as e:
+                logging.warning(f"Fast displayio update failed, falling back to PIL: {e}")
+        
+        # Fallback to PIL-based drawing
         try:
             from datetime import datetime
             
@@ -481,13 +569,86 @@ class DisplayManager:
             draw.text((10, self.height - 22), status_text[:35], fill=colors['white'], font=self.font_small)
             
             # Push to display (this is the fast part!)
+            logging.debug("Pushing image to ST7789 display...")
             self.st7789_display.display(img)
+            logging.debug("ST7789 display update completed")
                 
             return True
             
         except Exception as e:
             logging.error(f"Error updating ST7789 display: {e}")
             return False
+    
+    def _update_fast_displayio(self, system, freq, tgid, extra, settings):
+        """Update ST7789 display using fast displayio text elements."""
+        from datetime import datetime
+        
+        # Update timestamp
+        now_str = datetime.now().strftime("%H:%M:%S")
+        self._text_labels['timestamp'].text = now_str
+        
+        # Update system name
+        system_text = system[:25] if system else "No System" 
+        self._text_labels['system'].text = system_text
+        
+        # Update department
+        department = "Scanning..."
+        encrypted = bool(extra.get('encrypted'))
+        
+        if tgid and self.talkgroup_manager and not encrypted:
+            tg_info = self.talkgroup_manager.lookup(tgid)
+            if tg_info:
+                department = tg_info['department']
+                description = tg_info['description']
+                if description:
+                    department = f"{department} - {description}"
+            else:
+                department = f"TGID {tgid} - Unknown"
+        elif encrypted:
+            department = "Encrypted"
+        
+        dept_text = department[:25] if len(department) > 25 else department
+        self._text_labels['department'].text = dept_text
+        
+        # Update talkgroup info
+        if tgid:
+            if encrypted:
+                tag = "Encrypted"
+            elif extra.get('active'):
+                srcaddr = extra.get('srcaddr', 0)
+                tag = f"TGID: {tgid} | SRC: {srcaddr}"
+            else:
+                last_activity = extra.get('last_activity')
+                if last_activity:
+                    tag = f"TGID: {tgid} (last: {last_activity}s)"
+                else:
+                    tag = f"TGID: {tgid}"
+        else:
+            tag = "Scanning..."
+            
+        self._text_labels['talkgroup'].text = tag[:30]
+        
+        # Update frequency
+        freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
+        self._text_labels['frequency'].text = freq_text
+        
+        # Update system info
+        nac = extra.get('nac', '--')
+        wacn = extra.get('wacn', '--') 
+        sysid = extra.get('sysid', '--')
+        site_info = f"NAC:{nac} WACN:{wacn} SYS:{sysid}"
+        self._text_labels['system_info'].text = site_info[:30]
+        
+        # Update status
+        volume = settings.get('volume_level', 0)
+        mute_status = "MUTE" if settings.get('mute') else f"VOL:{volume}"
+        rec_status = "REC" if settings.get('recording') else ""
+        status_text = f"{mute_status} | SQL:2"
+        if rec_status:
+            status_text += f" | {rec_status}"
+        self._text_labels['status'].text = status_text[:30]
+        
+        return True
 
     def set_rotation(self, angle):
         """Set display rotation angle (0, 90, 180, or 270 degrees)"""
