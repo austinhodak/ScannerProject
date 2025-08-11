@@ -40,12 +40,21 @@ except Exception:
 class DisplayManager:
     def __init__(self, talkgroup_manager=None, rotation=0):
         # ST7789 TFT settings
-        self.width = 320
-        self.height = 240
+        self._panel_native_width = 240  # native portrait width
+        self._panel_native_height = 320  # native portrait height
         self.image_path = "/tmp/scanner_screen.jpg"
         self.talkgroup_manager = talkgroup_manager
         self._last_tft_signature = None
-        self.rotation = rotation if rotation in [0, 90, 180, 270] else 0  # Rotation angle: 0, 90, 180, or 270 degrees
+        self.rotation = (
+            rotation if rotation in [0, 90, 180, 270] else 180
+        )  # Rotation angle
+        # Compute current logical width/height based on rotation
+        if self.rotation in (0, 180):
+            self.width = self._panel_native_width
+            self.height = self._panel_native_height
+        else:
+            self.width = self._panel_native_height
+            self.height = self._panel_native_width
 
         # Initialize fonts with fallbacks (only for TFT display)
         self.font_small = self._load_font(size=12)
@@ -160,6 +169,14 @@ class DisplayManager:
 
                 baudrate = int(settings.get("st7789_baudrate", 48_000_000))
                 rotation = int(settings.get("tft_rotation", 0))
+                # Update logical dimensions for rotation
+                if rotation in (0, 180):
+                    self.width = self._panel_native_width
+                    self.height = self._panel_native_height
+                else:
+                    self.width = self._panel_native_height
+                    self.height = self._panel_native_width
+                self.rotation = rotation
 
                 self.rgb_display = rgb_st7789.ST7789(
                     spi,
@@ -216,7 +233,15 @@ class DisplayManager:
                 display_bus = FourWire(
                     spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst
                 )
-                rotation = int(settings.get("tft_rotation", 90)) if settings else 90
+                rotation = int(settings.get("tft_rotation", 180)) if settings else 180
+                # Update logical dimensions for rotation
+                if rotation in (0, 180):
+                    self.width = self._panel_native_width
+                    self.height = self._panel_native_height
+                else:
+                    self.width = self._panel_native_height
+                    self.height = self._panel_native_width
+                self.rotation = rotation
                 self.st7789_display = adafruit_st7789.ST7789(
                     display_bus,
                     width=self.width,
