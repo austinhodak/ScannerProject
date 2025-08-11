@@ -117,14 +117,17 @@ class DisplayManager:
             # Initialize ST7789 with high-speed SPI
             self.st7789_display = st7789.ST7789(
                 port=0,              # SPI port
-                cs=cs_pin,          # CS pin
+                cs=cs_pin,          # CS pin (can also use st7789.BG_SPI_CS_FRONT for certain pins)
                 dc=dc_pin,          # DC pin  
                 rst=rst_pin,        # Reset pin
                 backlight=None,     # No backlight control for now
+                spi_speed_hz=80000000,  # 80MHz - very fast!
                 width=self.width,
                 height=self.height,
                 rotation=0,         # Portrait mode
-                spi_speed_hz=80000000,  # 80MHz - very fast!
+                invert=False,       # Color inversion
+                offset_left=0,      # Display offset
+                offset_top=0        # Display offset
             )
             
             self.st7789_available = True
