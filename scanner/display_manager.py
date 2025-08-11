@@ -11,11 +11,14 @@ import adafruit_ssd1306
 import logging
 from abc import ABC, abstractmethod
 
-# Safe imports for displayio hardware
+# Safe imports for displayio hardware and helpers
 try:
     import displayio
     from fourwire import FourWire
     import adafruit_st7789
+
+    # Import the helper for converting PIL images to displayio Bitmaps
+    from adafruit_pillow_compat import from_pillow
 
     ST7789_AVAILABLE = True
 except ImportError:
@@ -72,19 +75,14 @@ class DisplayViewModel:
 
     def update(self, system, freq, tgid, extra, settings):
         """Updates the view model with the latest raw data from the scanner."""
-        # Update constantly changing values
         self.timestamp = datetime.now().strftime("%b %d %H:%M:%S")
         self.signal_quality = extra.get("signal_quality", 0.0)
         self.is_signal_locked = extra.get("signal_locked", False)
         self.is_encrypted = bool(extra.get("encrypted"))
         srcaddr = extra.get("srcaddr")
         self.is_active_transmission = extra.get("active") and srcaddr is not None
-
-        # System Name
         self.system_name = system[:35] if system else "No System"
         self.status_indicator_color = "red" if system == "Offline" else "orange"
-
-        # Department & Talkgroup Info
         if tgid:
             if self.is_encrypted:
                 self.department_text = "Encrypted"
@@ -122,8 +120,6 @@ class DisplayViewModel:
             self.department_text = "Scanning..."
             self.department_color = "yellow"
             self.talkgroup_line = "..."
-
-        # Other Info
         self.frequency_line = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
         nac, wacn, sysid = (
             extra.get("nac", "--"),
@@ -131,16 +127,12 @@ class DisplayViewModel:
             extra.get("sysid", "--"),
         )
         self.system_info_line = f"NAC: {nac} | WACN: {wacn} | SYS: {sysid}"
-
-        # Status Bar
         volume = settings.get("volume_level", 0)
         mute_status = "MUTE" if settings.get("mute") else f"VOL:{volume}"
         rec_status = "REC" if settings.get("recording") else ""
         self.status_bar_text = f"{mute_status}"
         if rec_status:
             self.status_bar_text += f" | {rec_status}"
-
-        # Idle/Scanning status for OLED
         if system != "Offline":
             self.idle_status_text = (
                 f"IDLE {extra.get('last_activity')}s"
@@ -153,7 +145,6 @@ class DisplayViewModel:
 
 # =====================================================================================
 # 2. BASE AND DRIVER CLASSES (The "Hands")
-#    Each class manages one physical display and knows how to draw.
 # =====================================================================================
 class BaseDisplay(ABC):
     """Abstract base class for all display types."""
@@ -175,7 +166,6 @@ class BaseDisplay(ABC):
         pass
 
     def _should_update(self, interval):
-        """Throttle updates to a specific interval."""
         now = time.time()
         if (now - self._last_update_time) >= interval:
             self._last_update_time = now
@@ -191,8 +181,6 @@ class TFTDisplay(BaseDisplay):
         if not ST7789_AVAILABLE:
             logging.debug("ST7789 libraries not found, TFT will be unavailable.")
             return
-
-        # Prepare properties but do not initialize hardware yet
         self.width, self.height = (320, 240) if rotation in [0, 180] else (240, 320)
         self.rotation = rotation
         self.display = None
@@ -217,7 +205,6 @@ class TFTDisplay(BaseDisplay):
             cs_pin = getattr(board, s.get("st7789_cs_pin", "D5"))
             dc_pin = getattr(board, s.get("st7789_dc_pin", "D25"))
             rst_pin = getattr(board, s.get("st7789_rst_pin", "D27"))
-
             display_bus = FourWire(
                 spi, command=dc_pin, chip_select=cs_pin, reset=rst_pin
             )
@@ -232,6 +219,16 @@ class TFTDisplay(BaseDisplay):
             logging.error(f"Failed to initialize ST7789 display: {e}")
             self.is_available = False
 
+    def _display_pil_image(self, img: Image.Image):
+        """Helper to convert a PIL image and show it on a displayio screen."""
+        # The modern displayio way: convert PIL image to a displayio.Bitmap,
+        # put it in a Group, and set it as the root_group.
+        group = displayio.Group()
+        bitmap = from_pillow(img.convert("RGB"))
+        tile_grid = displayio.TileGrid(bitmap, pixel_shader=bitmap.pixel_shader)
+        group.append(tile_grid)
+        self.display.root_group = group
+
     def update(self, view_model: DisplayViewModel, force_redraw=False):
         if not self.is_available or (not self._should_update(0.5) and not force_redraw):
             return
@@ -241,7 +238,6 @@ class TFTDisplay(BaseDisplay):
                 "RGB", (self.width, self.height), color=self.colors["background"]
             )
             draw = ImageDraw.Draw(img)
-
             draw.rectangle((0, 0, self.width, 30), fill=self.colors["header"])
             draw.text((5, 5), "SCANNER", fill="black", font=self.font_med)
             draw.text(
@@ -250,19 +246,16 @@ class TFTDisplay(BaseDisplay):
                 fill="black",
                 font=self.font_med,
             )
-
             draw.rectangle(
                 (0, 30, self.width, 70), fill=view_model.status_indicator_color
             )
             draw.text(
                 (10, 35), view_model.system_name, fill="black", font=self.font_large
             )
-
             draw.rectangle((0, 70, self.width, 110), fill=view_model.department_color)
             draw.text(
                 (10, 75), view_model.department_text, fill="black", font=self.font_large
             )
-
             draw.text(
                 (10, 120),
                 view_model.talkgroup_line,
@@ -281,7 +274,6 @@ class TFTDisplay(BaseDisplay):
                 fill=self.colors["text"],
                 font=self.font_med,
             )
-
             draw.rectangle(
                 (0, self.height - 30, self.width, self.height),
                 fill=self.colors["status"],
@@ -293,7 +285,8 @@ class TFTDisplay(BaseDisplay):
                 font=self.font_med,
             )
 
-            self.display.image(img)
+            # FIX: Use the correct displayio method to show the image
+            self._display_pil_image(img)
         except Exception as e:
             logging.error(f"Error updating TFT display: {e}")
 
@@ -316,12 +309,16 @@ class TFTDisplay(BaseDisplay):
             font=self.font_med,
             fill="white",
         )
-        self.display.image(img)
+
+        # FIX: Use the correct displayio method to show the image
+        self._display_pil_image(img)
 
     def clear(self):
         if not self.is_available:
             return
-        self.display.fill(0)
+        # A black screen is just a black PIL image.
+        black_img = Image.new("RGB", (self.width, self.height), color="black")
+        self._display_pil_image(black_img)
 
     def _load_font(self, size):
         paths = [
@@ -352,12 +349,10 @@ class OLEDDisplay(BaseDisplay):
     def update(self, view_model: DisplayViewModel, force_redraw=False):
         if not self.is_available or (not self._should_update(0.1) and not force_redraw):
             return
-
         try:
             self.display.fill(0)
             self.display.text(datetime.now().strftime("%H:%M:%S"), 0, 0, 1)
             self._draw_progress_bar(88, 0, 40, 8, view_model.signal_quality)
-
             if view_model.is_active_transmission:
                 tg_text = view_model.department_text[:21]
                 self.display.text(tg_text, 0, 12, 1)
@@ -365,7 +360,6 @@ class OLEDDisplay(BaseDisplay):
             else:
                 self.display.text("Scanning...", 0, 12, 1)
                 self.display.text(view_model.idle_status_text[:21], 0, 24, 1)
-
             self.display.text(view_model.status_bar_text[:21], 0, 54, 1)
             self.display.show()
         except Exception as e:
@@ -394,7 +388,6 @@ class OLEDDisplay(BaseDisplay):
 
 # =====================================================================================
 # 3. MAIN MANAGER CLASS (The "Orchestrator")
-#    This is the public-facing class that ties everything together.
 # =====================================================================================
 class DisplayManager:
     """
@@ -404,11 +397,8 @@ class DisplayManager:
     def __init__(self, talkgroup_manager=None, rotation=0):
         self.view_model = DisplayViewModel(talkgroup_manager)
         self.displays = []
-
-        # Create driver instances but do not initialize hardware yet
         tft = TFTDisplay(rotation=rotation)
         self.displays.append(tft)
-
         oled = OLEDDisplay()
         self.displays.append(oled)
 
@@ -416,27 +406,21 @@ class DisplayManager:
         """Initializes hardware for all managed displays that require it."""
         logging.info("Initializing display hardware...")
         for display in self.displays:
-            # Check if the display has a specific initializer method
             if hasattr(display, "initialize_hardware"):
                 try:
                     display.initialize_hardware(settings)
                 except Exception as e:
                     logging.error(f"Error initializing {type(display).__name__}: {e}")
-
-        # Log a warning if no displays ended up being available
         if not any(d.is_available for d in self.displays):
             logging.warning(
                 "No displays were initialized. DisplayManager will be inactive."
             )
 
     def update(self, system, freq, tgid, extra, settings):
-        """High-level update method."""
         self.view_model.update(system, freq, tgid, extra, settings)
-
         force_update = extra.get("force_redraw", False)
         if not self.view_model.has_changed() and not force_update:
             return
-
         for display in self.displays:
             if display.is_available:
                 try:
@@ -447,13 +431,11 @@ class DisplayManager:
                     )
 
     def clear(self):
-        """Clears all available displays."""
         for display in self.displays:
             if display.is_available:
                 display.clear()
 
     def show_message(self, title, message, duration=3):
-        """Shows a message on all available displays."""
         for display in self.displays:
             if display.is_available:
                 display.show_message(title, message, duration)
@@ -461,6 +443,5 @@ class DisplayManager:
             time.sleep(duration)
 
     def cleanup(self):
-        """Clears all displays on shutdown."""
         logging.info("Cleaning up displays.")
         self.clear()
