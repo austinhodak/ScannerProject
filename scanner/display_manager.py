@@ -591,22 +591,42 @@ class DisplayManager:
                 
             draw.text((10, self.height - 22), status_text[:35], fill=colors['white'], font=self.font_small)
             
-            # Push to display using the image method that was working
-            logging.debug("Pushing image to ST7789 display...")
-            if hasattr(self.st7789_display, 'image'):
-                self.st7789_display.image(img)
-            else:
-                # Fallback to root_group method
-                bitmap = displayio.Bitmap(self.width, self.height, 2)
-                palette = displayio.Palette(2)  
-                palette[0] = 0x000000
-                palette[1] = 0xFFFFFF
-                
-                tile_grid = displayio.TileGrid(bitmap, pixel_shader=palette)
-                group = displayio.Group()
-                group.append(tile_grid)
-                self.st7789_display.root_group = group
+            # Convert PIL image to displayio format and push to display
+            logging.debug("Converting PIL image to displayio bitmap...")
             
+            # Create bitmap with enough colors
+            bitmap = displayio.Bitmap(self.width, self.height, 65536)
+            palette = displayio.Palette(65536)
+            
+            # Convert PIL image to bitmap
+            pixels = img.load()
+            color_map = {}
+            next_color_index = 0
+            
+            for y in range(self.height):
+                for x in range(self.width):
+                    r, g, b = pixels[x, y]
+                    # Convert to 16-bit color key
+                    color_key = (r & 0xF8, g & 0xFC, b & 0xF8)
+                    
+                    if color_key not in color_map:
+                        if next_color_index < 65536:
+                            palette[next_color_index] = color_key
+                            color_map[color_key] = next_color_index
+                            next_color_index += 1
+                        else:
+                            # Use closest existing color
+                            color_map[color_key] = 0
+                    
+                    bitmap[x, y] = color_map[color_key]
+            
+            # Create tile grid and group
+            tile_grid = displayio.TileGrid(bitmap, pixel_shader=palette)
+            group = displayio.Group()
+            group.append(tile_grid)
+            
+            # Update display
+            self.st7789_display.root_group = group
             logging.debug("ST7789 display update completed")
             return True
             
