@@ -9,1014 +9,459 @@ import board
 import busio
 import adafruit_ssd1306
 import logging
+from abc import ABC, abstractmethod
 
+# Safe imports for displayio hardware
 try:
     import displayio
     from fourwire import FourWire
     import adafruit_st7789
-    from adafruit_display_text import label
-    import terminalio
+
     ST7789_AVAILABLE = True
 except ImportError:
-    try:
-        import displayio
-        from displayio import FourWire
-        import adafruit_st7789
-        from adafruit_display_text import label
-        import terminalio
-        ST7789_AVAILABLE = True
-    except ImportError:
-        ST7789_AVAILABLE = False
+    ST7789_AVAILABLE = False
 
-class DisplayManager:
-    def __init__(self, talkgroup_manager=None, rotation=0):
-        # ST7789 TFT settings
-        self.width = 320
-        self.height = 240
-        self.image_path = "/tmp/scanner_screen.jpg"
+
+# =====================================================================================
+# 1. VIEWMODEL CLASS (The "Brain")
+#    Prepares all data for display, separating logic from drawing.
+# =====================================================================================
+class DisplayViewModel:
+    """
+    Prepares and holds the state for all displays.
+    This class transforms raw scanner data into display-ready strings and properties.
+    """
+
+    def __init__(self, talkgroup_manager):
         self.talkgroup_manager = talkgroup_manager
-        self._last_tft_signature = None
-        self.rotation = rotation if rotation in [0, 90, 180, 270] else 0  # Rotation angle: 0, 90, 180, or 270 degrees
-        
-        # Initialize fonts with fallbacks (only for TFT display)
-        self.font_small = self._load_font(size=12)
-        self.font_med = self._load_font(size=16)
-        self.font_large = self._load_font(size=24)
-        
-        # Initialize scrolling state for OLED
-        self.scroll_offset = 0
-        self.scroll_direction = 1
-        self.last_scroll_time = 0
-        self.scroll_delay = 0.5  # Seconds between scroll updates (will be overridden by settings)
-        self.current_scroll_text = ""
-        
-        # OLED refresh rate control
-        self._last_oled_update = 0.0
-        self._oled_min_interval = 0.05  # default 20 Hz (1/20 = 0.05)
-        # Volume cache (reduce shell calls)
-        self._vol_cache = 0
-        self._vol_last_time = 0.0
-        self._vol_poll_interval = 1.0  # seconds between actual system volume polls
-        self._vol_hint_grace = 0.6     # seconds to trust UI hint before polling system
-        self._last_user_volume_change_time = 0.0
-        # ST7789 TFT throttling/settings
-        self._last_tft_push = 0.0
-        self._tft_min_interval = 0.1  # default seconds between ST7789 updates
-        # Skip TFT during rapid user interactions
-        self._skip_tft_until = 0.0
-        # Volume adjustment mode (UI hint)
-        self._volume_mode_active = False
-        
-        # Initialize ST7789 display
-        self.st7789_available = False
-        self.st7789_display = None
-        # ST7789 initialization will be done later via init_st7789() when settings are available
-        
-        # Pre-create display elements for fast updates
-        self._display_group = None
-        self._text_labels = {}
-        
-        # Color scheme
-        self.colors = {
-            'background': 'black',
-            'text': 'white',
-            'header': 'orange',
-            'department': 'yellow',
-            'status': 'blue',
-            'high_priority': 'red',
-            'medium_priority': 'orange',
-            'low_priority': 'green'
-        }
+        self._last_signature = None
 
-        # Initialize OLED display (simple approach like working code)
-        try:
-            # Allow higher I2C frequency for faster OLED refresh (default 400kHz)
-            i2c_frequency_hz = 400_000
-            try:
-                # If SettingsManager is used to pass settings, we may not have it here; keep default
-                # Caller can later adjust via a setter if needed
-                pass
-            except Exception:
-                pass
-            try:
-                i2c = busio.I2C(board.SCL, board.SDA, frequency=i2c_frequency_hz)
-            except TypeError:
-                # Older libraries may not support frequency kwarg
-                i2c = busio.I2C(board.SCL, board.SDA)
-            self.oled = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c)
-            self.oled.fill(0)
-            self.oled.show()
-            self.oled_available = True
-            logging.info("OLED display initialized successfully")
-        except Exception as e:
-            logging.warning(f"OLED display not available: {e}")
-            self.oled_available = False
-            self.oled = None
-    
-    def init_st7789(self, settings):
-        """Initialize ST7789 display with fast displayio."""
+        # --- All display-ready properties are initialized here ---
+        self.timestamp = ""
+        self.system_name = "Initializing..."
+        self.status_indicator_color = "gray"
+        self.department_text = "Scanning..."
+        self.department_color = "yellow"
+        self.talkgroup_line = "..."
+        self.frequency_line = "..."
+        self.system_info_line = "..."
+        self.status_bar_text = "..."
+        self.signal_quality = 0.0
+        self.is_signal_locked = False
+        self.is_encrypted = False
+        self.is_active_transmission = False
+        self.radio_id_text = ""
+        self.idle_status_text = "MONITORING"
+
+    def has_changed(self):
+        """Checks if display-critical data has changed to prevent needless redraws."""
+        current_signature = (
+            self.system_name,
+            self.department_text,
+            self.talkgroup_line,
+            self.frequency_line,
+            self.system_info_line,
+            self.status_bar_text,
+            self.is_encrypted,
+            self.is_active_transmission,
+        )
+        if current_signature != self._last_signature:
+            self._last_signature = current_signature
+            return True
+        return False
+
+    def update(self, system, freq, tgid, extra, settings):
+        """Updates the view model with the latest raw data from the scanner."""
+        # Update constantly changing values
+        self.timestamp = datetime.now().strftime("%b %d %H:%M:%S")
+        self.signal_quality = extra.get("signal_quality", 0.0)
+        self.is_signal_locked = extra.get("signal_locked", False)
+        self.is_encrypted = bool(extra.get("encrypted"))
+        srcaddr = extra.get("srcaddr")
+        self.is_active_transmission = extra.get("active") and srcaddr is not None
+
+        # System Name
+        self.system_name = system[:35] if system else "No System"
+        self.status_indicator_color = "red" if system == "Offline" else "orange"
+
+        # Department & Talkgroup Info
+        if tgid:
+            if self.is_encrypted:
+                self.department_text = "Encrypted"
+                self.department_color = "orange"
+                self.talkgroup_line = "Encrypted Transmission"
+            else:
+                tg_info = (
+                    self.talkgroup_manager.lookup(tgid)
+                    if self.talkgroup_manager
+                    else None
+                )
+                if tg_info:
+                    self.department_text = tg_info.get("department", "Unknown Dept.")
+                    desc = tg_info.get("description", "")
+                    if desc:
+                        self.department_text = f"{self.department_text} - {desc}"
+
+                    priority = tg_info.get("priority", "Medium")
+                    if priority == "High":
+                        self.department_color = "red"
+                    elif priority == "Medium":
+                        self.department_color = "orange"
+                    else:
+                        self.department_color = "green"
+                else:
+                    self.department_text = f"TGID {tgid} - Unknown"
+                    self.department_color = "yellow"
+
+                if self.is_active_transmission:
+                    self.talkgroup_line = f"TGID: {tgid} | SRC: {srcaddr}"
+                    self.radio_id_text = f"RADIO {srcaddr}"
+                else:
+                    self.talkgroup_line = f"TGID: {tgid}"
+        else:
+            self.department_text = "Scanning..."
+            self.department_color = "yellow"
+            self.talkgroup_line = "..."
+
+        # Other Info
+        self.frequency_line = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
+        nac, wacn, sysid = (
+            extra.get("nac", "--"),
+            extra.get("wacn", "--"),
+            extra.get("sysid", "--"),
+        )
+        self.system_info_line = f"NAC: {nac} | WACN: {wacn} | SYS: {sysid}"
+
+        # Status Bar
+        volume = settings.get("volume_level", 0)
+        mute_status = "MUTE" if settings.get("mute") else f"VOL:{volume}"
+        rec_status = "REC" if settings.get("recording") else ""
+        self.status_bar_text = f"{mute_status}"
+        if rec_status:
+            self.status_bar_text += f" | {rec_status}"
+
+        # Idle/Scanning status for OLED
+        if system != "Offline":
+            self.idle_status_text = (
+                f"IDLE {extra.get('last_activity')}s"
+                if extra.get("last_activity")
+                else "MONITORING"
+            )
+        else:
+            self.idle_status_text = "OFFLINE"
+
+
+# =====================================================================================
+# 2. BASE AND DRIVER CLASSES (The "Hands")
+#    Each class manages one physical display and knows how to draw.
+# =====================================================================================
+class BaseDisplay(ABC):
+    """Abstract base class for all display types."""
+
+    def __init__(self):
+        self._last_update_time = 0.0
+        self.is_available = False
+
+    @abstractmethod
+    def update(self, view_model: DisplayViewModel, force_redraw=False):
+        pass
+
+    @abstractmethod
+    def clear(self):
+        pass
+
+    @abstractmethod
+    def show_message(self, title, message, duration=3):
+        pass
+
+    def _should_update(self, interval):
+        """Throttle updates to a specific interval."""
+        now = time.time()
+        if (now - self._last_update_time) >= interval:
+            self._last_update_time = now
+            return True
+        return False
+
+
+class TFTDisplay(BaseDisplay):
+    """Driver for the ST7789 TFT display using PIL for robust drawing."""
+
+    def __init__(self, rotation=0, settings=None):
+        super().__init__()
         if not ST7789_AVAILABLE:
+            logging.warning("ST7789 libraries not found, TFT will be unavailable.")
             return
-        
+
+        self.width, self.height = (320, 240) if rotation in [0, 180] else (240, 320)
+        self.rotation = rotation
+        self.display = None
+        self.font_small = self._load_font(12)
+        self.font_med = self._load_font(16)
+        self.font_large = self._load_font(24)
+        self.colors = {
+            "background": "black",
+            "text": "white",
+            "header": "orange",
+            "status": "blue",
+        }
+        self._init_hardware(settings)
+
+    def _init_hardware(self, settings):
         try:
             displayio.release_displays()
             spi = board.SPI()
-            
-            # Get pin assignments from settings with defaults
-            cs_pin_name = settings.get('st7789_cs_pin', 'D5')
-            dc_pin_name = settings.get('st7789_dc_pin', 'D25')
-            rst_pin_name = settings.get('st7789_rst_pin', 'D27')
-            
-            # Convert pin names to board objects
-            tft_cs = getattr(board, cs_pin_name, board.D5)
-            tft_dc = getattr(board, dc_pin_name, board.D25)
-            tft_rst = getattr(board, rst_pin_name, board.D27)
-            
-            display_bus = FourWire(spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst)
-            self.st7789_display = adafruit_st7789.ST7789(
-                display_bus, 
-                width=self.width, 
-                height=self.height,
-                rotation=0,  # Portrait mode
-                rowstart=0,
-                colstart=0
+            # Use safe .get() with defaults from a settings object if available
+            s = settings or {}
+            cs_pin = getattr(board, s.get("st7789_cs_pin", "D5"))
+            dc_pin = getattr(board, s.get("st7789_dc_pin", "D25"))
+            rst_pin = getattr(board, s.get("st7789_rst_pin", "D27"))
+
+            display_bus = FourWire(
+                spi, command=dc_pin, chip_select=cs_pin, reset=rst_pin
             )
-            
-            # Create fast update display structure
-            self._init_fast_display()
-            
-            self.st7789_available = True
-            logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) on pins CS:{cs_pin_name}, DC:{dc_pin_name}, RST:{rst_pin_name}")
-            
+            self.display = adafruit_st7789.ST7789(
+                display_bus, width=320, height=240, rotation=self.rotation
+            )
+            self.is_available = True
+            logging.info(
+                f"ST7789 display initialized successfully (Rotation: {self.rotation})"
+            )
         except Exception as e:
-            logging.warning(f"ST7789 display not available: {e}")
-            self.st7789_available = False
-            self.st7789_display = None
-    
-    def _init_fast_display(self):
-        """Initialize fast displayio elements for high-performance updates."""
-        if not self.st7789_available or self.st7789_display is None:
+            logging.error(f"Failed to initialize ST7789 display: {e}")
+            self.is_available = False
+
+    def update(self, view_model: DisplayViewModel, force_redraw=False):
+        if not self.is_available or not self._should_update(0.5) and not force_redraw:
             return
-            
-        try:
-            # Create main display group
-            self._display_group = displayio.Group()
-            
-            # Create background bitmap with header bars
-            background_bitmap = displayio.Bitmap(self.width, self.height, 8)
-            background_palette = displayio.Palette(8)
-            background_palette[0] = 0x000000  # Black (background)
-            background_palette[1] = 0xFFA500  # Orange (headers)
-            background_palette[2] = 0xFFFF00  # Yellow (department)
-            background_palette[3] = 0x0064FF  # Blue (status)
-            background_palette[4] = 0xFF0000  # Red (high priority)
-            background_palette[5] = 0x00FF00  # Green (low priority)
-            background_palette[6] = 0x808080  # Gray (inactive)
-            background_palette[7] = 0xFFFFFF  # White
-            
-            # Fill background with black
-            for x in range(self.width):
-                for y in range(self.height):
-                    background_bitmap[x, y] = 0
-            
-            # Create header bar (orange) - top 30 pixels
-            for x in range(self.width):
-                for y in range(30):
-                    background_bitmap[x, y] = 1
-            
-            # Create system name bar (orange) - pixels 30-70
-            for x in range(self.width):
-                for y in range(30, 70):
-                    background_bitmap[x, y] = 1
-                    
-            # Create status bar (blue) - bottom 30 pixels
-            for x in range(self.width):
-                for y in range(self.height - 30, self.height):
-                    background_bitmap[x, y] = 3
-            
-            # Add background to display group
-            bg_tile_grid = displayio.TileGrid(background_bitmap, pixel_shader=background_palette)
-            self._display_group.append(bg_tile_grid)
-            
-            # Store references for dynamic color changes
-            self._background_bitmap = background_bitmap
-            self._background_palette = background_palette
-            
-            # Pre-create text labels for different display elements
-            font = terminalio.FONT
-            
-            # Header elements
-            self._text_labels['timestamp'] = label.Label(font, text="", color=0x000000)
-            self._text_labels['timestamp'].anchor_point = (1.0, 0.0)  # Top-right anchor
-            self._text_labels['timestamp'].anchored_position = (self.width - 5, 8)
-            
-            self._text_labels['system'] = label.Label(font, text="", color=0x000000, scale=2)
-            self._text_labels['system'].anchor_point = (0.0, 0.0)
-            self._text_labels['system'].anchored_position = (10, 40)
-            
-            self._text_labels['department'] = label.Label(font, text="", color=0x000000, scale=2)
-            self._text_labels['department'].anchor_point = (0.0, 0.0) 
-            self._text_labels['department'].anchored_position = (10, 78)
-            
-            self._text_labels['talkgroup'] = label.Label(font, text="", color=0xFFFFFF)
-            self._text_labels['talkgroup'].anchor_point = (0.0, 0.0)
-            self._text_labels['talkgroup'].anchored_position = (10, 118)
-            
-            self._text_labels['frequency'] = label.Label(font, text="", color=0xFFFFFF)
-            self._text_labels['frequency'].anchor_point = (0.0, 0.0)
-            self._text_labels['frequency'].anchored_position = (10, 138)
-            
-            self._text_labels['system_info'] = label.Label(font, text="", color=0xFFFFFF)
-            self._text_labels['system_info'].anchor_point = (0.0, 0.0)
-            self._text_labels['system_info'].anchored_position = (10, 158)
-            
-            self._text_labels['status'] = label.Label(font, text="", color=0xFFFFFF)
-            self._text_labels['status'].anchor_point = (0.0, 0.0)
-            self._text_labels['status'].anchored_position = (10, self.height - 22)
-            
-            # Add all labels to the display group
-            for text_label in self._text_labels.values():
-                self._display_group.append(text_label)
-            
-            # Set the display group
-            self.st7789_display.root_group = self._display_group
-            
-            logging.info("Fast displayio elements initialized successfully")
-            
-        except Exception as e:
-            logging.warning(f"Could not initialize fast displayio elements: {e}")
-            # Fall back to PIL-based drawing
-            self._display_group = None
-            self._text_labels = {}
-    
-    def _format_signal_bars(self, extra) -> str:
-        """Return signal bars like |||| using signal_quality in range [0, 1]."""
-        quality = extra.get('signal_quality', None)
-        if quality is None:
-            bars = 0
-        else:
-            try:
-                q = float(quality)
-            except Exception:
-                q = 0.0
-            # Clamp to [0,1]
-            if q < 0.0:
-                q = 0.0
-            elif q > 1.0:
-                q = 1.0
-            # Map to 0..4 bars with simple thresholds
-            if q >= 0.80:
-                bars = 4
-            elif q >= 0.60:
-                bars = 3
-            elif q >= 0.40:
-                bars = 2
-            elif q >= 0.20:
-                bars = 1
-            else:
-                bars = 0
-        return ("|" * bars).ljust(4, " ")
 
-    def _get_system_volume_percent(self, fallback: int = 0) -> int:
-        """Return current system output volume percent using PulseAudio or ALSA.
-        Caches for ~1s to avoid frequent shell calls.
-        """
-        now = time.time()
-        # During recent user volume interaction, trust UI hint to avoid flicker/mismatch
-        if now - getattr(self, "_last_user_volume_change_time", 0.0) < float(getattr(self, "_vol_hint_grace", 0.6)):
-            return self._vol_cache
-        # Honor configured poll interval to make on-screen volume feel more responsive
-        if now - self._vol_last_time < float(getattr(self, "_vol_poll_interval", 1.0)):
-            return self._vol_cache
-        vol = fallback
-        # Try PulseAudio (pactl)
         try:
-            out = subprocess.check_output(
-                ["pactl", "get-sink-volume", "@DEFAULT_SINK@"],
-                stderr=subprocess.DEVNULL,
-                text=True,
-                timeout=0.4,
+            img = Image.new(
+                "RGB", (self.width, self.height), color=self.colors["background"]
             )
-            m = re.search(r"(\d{1,3})%", out)
-            if m:
-                vol = int(m.group(1))
-        except Exception:
-            # Try ALSA (amixer)
-            try:
-                out = subprocess.check_output(
-                    ["amixer", "get", "Master"],
-                    stderr=subprocess.DEVNULL,
-                    text=True,
-                    timeout=0.4,
-                )
-                m = re.search(r"\[(\d{1,3})%\]", out)
-                if m:
-                    vol = int(m.group(1))
-            except Exception:
-                pass
-        vol = max(0, min(100, int(vol)))
-        self._vol_cache = vol
-        self._vol_last_time = now
-        return vol
-
-    def _get_volume_percent(self, settings) -> int:
-        """Return current system volume percentage; fallback to settings volume_level.
-        Uses recent UI hint for a short grace window to avoid flicker.
-        """
-        fallback = 0
-        try:
-            if settings is not None:
-                fallback = int(settings.get('volume_level', 0))
-        except Exception:
-            fallback = 0
-        return self._get_system_volume_percent(fallback)
-
-    def set_volume_hint(self, volume_percent: int):
-        """Provide a recent volume value to avoid slow system queries.
-        This immediately updates the cached value and timestamp.
-        """
-        try:
-            vol = max(0, min(100, int(volume_percent)))
-            self._vol_cache = vol
-            self._vol_last_time = time.time()
-            self._last_user_volume_change_time = self._vol_last_time
-        except Exception:
-            pass
-
-    def request_oled_refresh(self):
-        """Allow next OLED update to proceed immediately (bypass throttle once)."""
-        try:
-            self._last_oled_update = 0.0
-        except Exception:
-            pass
-
-    def _format_oled_header(self, extra, settings) -> str:
-        """Header text for OLED left side: just volume (e.g., 'V55')."""
-        vol_num = self._get_volume_percent(settings)
-        return f"V{vol_num}"
-
-    def _draw_lock_icon(self, x: int, y: int):
-        """Draw a tiny 6x8 padlock icon at (x,y) on the OLED (mono)."""
-        try:
-            # Body
-            # outer rect 6x5 starting at y+3
-            if hasattr(self.oled, 'rect'):
-                self.oled.rect(x, y + 3, 6, 5, 1)
-                # keyhole
-                self.oled.pixel(x + 3, y + 5, 1)
-            else:
-                # fallback with pixels
-                for dx in range(6):
-                    self.oled.pixel(x + dx, y + 3, 1)
-                    self.oled.pixel(x + dx, y + 7, 1)
-                for dy in range(3, 8):
-                    self.oled.pixel(x, y + dy, 1)
-                    self.oled.pixel(x + 5, y + dy, 1)
-                self.oled.pixel(x + 3, y + 5, 1)
-            # Shackle (u-shape)
-            self.oled.pixel(x + 1, y + 2, 1)
-            self.oled.pixel(x + 4, y + 2, 1)
-            self.oled.pixel(x + 1, y + 1, 1)
-            self.oled.pixel(x + 4, y + 1, 1)
-            for dx in range(2, 4):
-                self.oled.pixel(x + dx, y + 0, 1)
-        except Exception:
-            # If drawing fails, ignore
-            pass
-
-    def _draw_oled_header(self, extra, settings):
-        """Draw OLED header: time on far left, volume next, signal bar on far right."""
-        # Left-most: current time HH:MM
-        try:
-            time_text = datetime.now().strftime("%H:%M")
-        except Exception:
-            time_text = "--:--"
-        # Draw time normally (not inverted)
-        try:
-            self.oled.text(time_text[:5], 0, 0, 1)
-        except Exception:
-            pass
-        time_px = min(len(time_text), 5) * 6
-
-        # Volume text immediately to the right of time, with a space
-        vol_text = self._format_oled_header(extra, settings)
-        vol_x = time_px + 6  # 1-char spacer
-        try:
-            vol_px = min(len(vol_text), 6) * 6
-            if self._volume_mode_active:
-                # Invert only the volume region
-                if hasattr(self.oled, 'fill_rect'):
-                    self.oled.fill_rect(vol_x, 0, max(18, vol_px + 2), 10, 1)
-                else:
-                    for dx in range(max(18, vol_px + 2)):
-                        for dy in range(10):
-                            self.oled.pixel(vol_x + dx, dy, 1)
-                if hasattr(self.oled, 'text'):
-                    self.oled.text(vol_text[:6], vol_x, 0, 0)
-            else:
-                self.oled.text(vol_text[:6], vol_x, 0, 1)
-        except Exception:
-            # Fallback plain draw
-            try:
-                self.oled.text(vol_text[:6], vol_x, 0, 1)
-            except Exception:
-                pass
-        left_px_end = vol_x + min(len(vol_text), 20) * 6
-
-        # Right: Signal rectangle fill (progress bar)
-        # Determine signal quality in [0,1]
-        try:
-            quality = float(extra.get('signal_quality', 0.0))
-        except Exception:
-            quality = 0.0
-        if quality < 0.0:
-            quality = 0.0
-        elif quality > 1.0:
-            quality = 1.0
-
-        bar_w = 40  # total width of bar
-        bar_h = 8   # height of bar
-        margin_right = 2
-        x_bar = max(0, 128 - bar_w - margin_right)
-        y_bar = 0
-        self._draw_progress_bar(x_bar, y_bar, bar_w, bar_h, quality)
-
-        # Optional: lock icon just to the left of bar if there's room
-        if extra.get('signal_locked'):
-            x_lock = x_bar - 10
-            if x_lock > left_px_end + 2:
-                self._draw_oled_header_lock_safe(x_lock)
-
-    def _draw_oled_header_lock_safe(self, x_lock: int):
-        """Helper to draw lock icon safely without raising exceptions."""
-        try:
-            self._draw_lock_icon(x_lock, 0)
-        except Exception:
-            pass
-
-    def _draw_progress_bar(self, x: int, y: int, w: int, h: int, frac: float):
-        """Draw an outline rectangle and fill horizontally to fraction [0,1]."""
-        try:
-            # Outline
-            if hasattr(self.oled, 'rect'):
-                self.oled.rect(x, y, w, h, 1)
-            # Inner fill
-            inner_w = max(0, min(w - 2, int((w - 2) * frac)))
-            if inner_w <= 0 or h <= 2:
-                return
-            if hasattr(self.oled, 'fill_rect'):
-                self.oled.fill_rect(x + 1, y + 1, inner_w, h - 2, 1)
-            else:
-                # Fallback: fill manually with pixels
-                for dx in range(inner_w):
-                    for dy in range(h - 2):
-                        self.oled.pixel(x + 1 + dx, y + 1 + dy, 1)
-        except Exception:
-            # Ignore drawing errors on systems without OLED
-            pass
-
-    def _update_st7789_display(self, system, freq, tgid, extra, settings):
-        """Update ST7789 display using fast displayio text elements."""
-        if not self.st7789_available or self.st7789_display is None:
-            logging.debug(f"ST7789 not available: available={self.st7789_available}, display={self.st7789_display is not None}")
-            return False
-        
-        logging.debug("Updating ST7789 display...")
-        
-        # Use fast displayio approach
-        if self._display_group and self._text_labels:
-            try:
-                return self._update_fast_displayio(system, freq, tgid, extra, settings)
-            except Exception as e:
-                logging.error(f"Fast displayio update failed: {e}")
-                return False
-        else:
-            logging.error("Fast displayio elements not initialized")
-            return False
-    
-    def _update_fast_displayio(self, system, freq, tgid, extra, settings):
-        """Update ST7789 display using fast displayio text elements."""
-        from datetime import datetime
-        
-        # Update timestamp
-        now_str = datetime.now().strftime("%H:%M:%S")
-        self._text_labels['timestamp'].text = now_str
-        
-        # Update system name
-        system_text = system[:25] if system else "No System" 
-        self._text_labels['system'].text = system_text
-        
-        # Update department and department bar color
-        department = "Scanning..."
-        dept_color_idx = 2  # Default yellow
-        encrypted = bool(extra.get('encrypted'))
-        
-        if tgid and self.talkgroup_manager and not encrypted:
-            tg_info = self.talkgroup_manager.lookup(tgid)
-            if tg_info:
-                department = tg_info['department']
-                description = tg_info['description']
-                if description:
-                    department = f"{department} - {description}"
-                
-                # Set department bar color based on priority
-                priority = tg_info.get('priority', 'Medium')
-                if priority == 'High':
-                    dept_color_idx = 4  # Red
-                elif priority == 'Medium':
-                    dept_color_idx = 1  # Orange
-                else:
-                    dept_color_idx = 5  # Green
-            else:
-                department = f"TGID {tgid} - Unknown"
-                dept_color_idx = 2  # Yellow
-        elif encrypted:
-            department = "Encrypted"
-            dept_color_idx = 1  # Orange
-        
-        # Update department bar color (pixels 70-110)
-        if hasattr(self, '_background_bitmap'):
-            for x in range(self.width):
-                for y in range(70, 110):
-                    self._background_bitmap[x, y] = dept_color_idx
-        
-        dept_text = department[:25] if len(department) > 25 else department
-        self._text_labels['department'].text = dept_text
-        
-        # Update talkgroup info
-        if tgid:
-            if encrypted:
-                tag = "Encrypted"
-            elif extra.get('active'):
-                srcaddr = extra.get('srcaddr', 0)
-                tag = f"TGID: {tgid} | SRC: {srcaddr}"
-            else:
-                last_activity = extra.get('last_activity')
-                if last_activity:
-                    tag = f"TGID: {tgid} (last: {last_activity}s)"
-                else:
-                    tag = f"TGID: {tgid}"
-        else:
-            tag = "Scanning..."
-            
-        self._text_labels['talkgroup'].text = tag[:30]
-        
-        # Update frequency
-        freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
-        self._text_labels['frequency'].text = freq_text
-        
-        # Update system info
-        nac = extra.get('nac', '--')
-        wacn = extra.get('wacn', '--') 
-        sysid = extra.get('sysid', '--')
-        site_info = f"NAC:{nac} WACN:{wacn} SYS:{sysid}"
-        self._text_labels['system_info'].text = site_info[:30]
-        
-        # Update status
-        volume = settings.get('volume_level', 0)
-        mute_status = "MUTE" if settings.get('mute') else f"VOL:{volume}"
-        rec_status = "REC" if settings.get('recording') else ""
-        status_text = f"{mute_status} | SQL:2"
-        if rec_status:
-            status_text += f" | {rec_status}"
-        self._text_labels['status'].text = status_text[:30]
-        
-        return True
-
-    def set_rotation(self, angle):
-        """Set display rotation angle (0, 90, 180, or 270 degrees)"""
-        if angle in [0, 90, 180, 270]:
-            self.rotation = angle
-            logging.info(f"Display rotation set to {angle} degrees")
-        else:
-            logging.warning(f"Invalid rotation angle {angle}, must be 0, 90, 180, or 270")
-            
-    def _load_font(self, size=16):
-        """Load font with fallbacks"""
-        font_paths = [
-            f"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            f"/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
-            f"/System/Library/Fonts/Arial.ttf",  # macOS
-            f"/Windows/Fonts/arial.ttf"  # Windows
-        ]
-        
-        for font_path in font_paths:
-            try:
-                if os.path.exists(font_path):
-                    return ImageFont.truetype(font_path, size)
-            except Exception as e:
-                logging.debug(f"Could not load font {font_path}: {e}")
-                
-        # Fallback to default
-        try:
-            return ImageFont.load_default()
-        except:
-            return None
-    
-    def _get_scrolling_text(self, text, max_width=20):
-        """Get scrolling text if text is longer than max_width"""
-        import time
-        
-        if len(text) <= max_width:
-            return text
-            
-        # Check if enough time has passed for next scroll step
-        current_time = time.time()
-        if current_time - self.last_scroll_time < self.scroll_delay:
-            # Return current position
-            if hasattr(self, 'current_scroll_text') and self.current_scroll_text:
-                return self.current_scroll_text[:max_width]
-            else:
-                return text[:max_width]
-        
-        # Update scroll position
-        self.last_scroll_time = current_time
-        
-        # Add padding to create smooth scrolling
-        padded_text = text + "   "  # 3 spaces padding
-        text_len = len(padded_text)
-        
-        # Calculate scroll position
-        if text_len <= max_width:
-            scrolled_text = padded_text
-        else:
-            # Scroll back and forth
-            max_offset = text_len - max_width
-            
-            if self.scroll_direction == 1:  # Scrolling right
-                self.scroll_offset += 1
-                if self.scroll_offset >= max_offset:
-                    self.scroll_direction = -1  # Start scrolling back
-                    # Pause at the end for readability
-                    self.scroll_delay = 1.0
-                else:
-                    self.scroll_delay = 0.5
-            else:  # Scrolling left
-                self.scroll_offset -= 1
-                if self.scroll_offset <= 0:
-                    self.scroll_direction = 1  # Start scrolling forward
-                    # Pause at the beginning for readability
-                    self.scroll_delay = 1.0
-                else:
-                    self.scroll_delay = 0.5
-            
-            scrolled_text = padded_text[self.scroll_offset:self.scroll_offset + max_width]
-        
-        self.current_scroll_text = scrolled_text
-        return scrolled_text
-
-    def update(self, system, freq, tgid, extra, settings):
-        # Update OLED first for better perceived responsiveness
-        if self.oled_available:
-            self.update_oled(system, freq, tgid, extra, settings)
-        # Optionally skip TFT updates during rapid user interactions
-        if time.time() >= self._skip_tft_until:
-            self.update_tft(system, freq, tgid, extra, settings)
-
-    def update_tft(self, system, freq, tgid, extra, settings):
-        """Update TFT display with current scanner information"""
-        try:
-            # Settings to control TFT activity
-            tft_enabled = settings.get('tft_enable', True)
-            if not tft_enabled:
-                return
-            update_interval = float(settings.get('tft_update_interval', self._tft_min_interval))
-
-            # Precompute all text content for signature/caching (exclude time)
-            system_text = system[:35] if system else "No System"
-
-            # Department/Agency bar
-            department = "Scanning..."
-            dept_color = self.colors['department']
-            encrypted = bool(extra.get('encrypted'))
-            
-            if tgid and self.talkgroup_manager and not encrypted:
-                tg_info = self.talkgroup_manager.lookup(tgid)
-                if tg_info:
-                    department = tg_info['department']
-                    description = tg_info['description']
-                    if description:
-                        department = f"{department} - {description}"
-                    
-                    # Color code by priority
-                    priority = tg_info.get('priority', 'Medium')
-                    if priority == 'High':
-                        dept_color = self.colors['high_priority']
-                    elif priority == 'Medium':
-                        dept_color = self.colors['medium_priority']
-                    else:
-                        dept_color = self.colors['low_priority']
-                else:
-                    department = f"TGID {tgid} - Unknown"
-            elif encrypted:
-                department = "Encrypted"
-                dept_color = self.colors['medium_priority']
-
-            dept_text = department[:40] if len(department) > 40 else department
-
-            # Talkgroup and frequency info
-            if tgid:
-                if encrypted:
-                    tag = "Encrypted"
-                elif extra.get('active'):
-                    # Active transmission - show source address
-                    srcaddr = extra.get('srcaddr', 0)
-                    tag = f"TGID: {tgid} | SRC: {srcaddr}"
-                else:
-                    # Recent activity
-                    last_activity = extra.get('last_activity')
-                    if last_activity:
-                        tag = f"TGID: {tgid} (last: {last_activity}s)"
-                    else:
-                        tag = f"TGID: {tgid}"
-            else:
-                tag = "Scanning..."
-                
-            freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
-
-            # System info
-            nac = extra.get('nac', '--')
-            wacn = extra.get('wacn', '--')
-            sysid = extra.get('sysid', '--')
-            
-            site_info = f"NAC: {nac} | WACN: {wacn} | SYS: {sysid}"
-            if extra.get('error'):
-                site_info += f" | ERR: {extra.get('error')}"
-            
-            # Additional system info
-            if settings.get('show_debug'):
-                debug_info = f"Auto: {'ON' if settings.get('auto_scan') else 'OFF'} | "
-                debug_info += f"Priority: {'ON' if settings.get('priority_scan') else 'OFF'}"
-
-            # Status bar
-            volume = settings.get('volume_level', 0)
-            mute_status = "MUTE" if settings.get('mute') else f"VOL:{volume}"
-            rec_status = "REC" if settings.get('recording') else ""
-            status_text = f"{mute_status} | SQL:2"
-            if rec_status:
-                status_text += f" | {rec_status}"
-
-            # Build a signature of visible content (exclude timestamp so time alone won't trigger)
-            signature = (system_text, dept_text, tag, freq_text, site_info, status_text)
-            now_ts = time.time()
-            if signature == self._last_tft_signature and (now_ts - self._last_tft_push) < update_interval:
-                # No relevant changes and not time for a scheduled refresh
-                return
-            self._last_tft_signature = signature
-
-            # Proceed to draw only when content changed
-            img = Image.new('RGB', (self.width, self.height), color=self.colors['background'])
             draw = ImageDraw.Draw(img)
 
-            # Header with timestamp
-            draw.rectangle((0, 0, self.width, 30), fill=self.colors['background'])
-            now_str = datetime.now().strftime("%b%d %H:%M:%S")
-            draw.text((self.width - 120, 5), now_str, fill=self.colors['text'], font=self.font_small)
-            # Connection status indicator
-            status_color = self.colors['high_priority'] if system == "Offline" else self.colors['medium_priority']
-            draw.rectangle((10, 5, 20, 25), fill=status_color)
-            # System name bar
-            draw.rectangle((0, 30, self.width, 70), fill=self.colors['header'])
-            draw.text((10, 40), system_text, fill="black", font=self.font_large)
-            # Department/Agency bar
-            draw.rectangle((0, 70, self.width, 110), fill=dept_color)
-            draw.text((10, 80), dept_text, fill="black", font=self.font_large)
-            # Talkgroup/Freq
-            draw.text((10, 120), tag, fill=self.colors['text'], font=self.font_large)
-            draw.text((10, 155), freq_text, fill=self.colors['text'], font=self.font_med)
-            # System info
-            draw.text((10, 175), site_info, fill=self.colors['text'], font=self.font_med)
-            # Debug info
-            if settings.get('show_debug'):
-                draw.text((10, 195), debug_info, fill=self.colors['text'], font=self.font_small)
-            # Status bar
-            draw.rectangle((0, self.height - 40, self.width, self.height), fill=self.colors['status'])
-            draw.text((10, self.height - 30), status_text, fill=self.colors['text'], font=self.font_med)
+            # Header
+            draw.rectangle((0, 0, self.width, 30), fill=self.colors["header"])
+            draw.text((5, 5), "SCANNER", fill="black", font=self.font_med)
+            draw.text(
+                (self.width - 130, 5),
+                view_model.timestamp,
+                fill="black",
+                font=self.font_med,
+            )
 
-            # Note: ST7789 rotation is handled in display initialization
-            # PIL rotation is not needed as ST7789 driver handles this
+            # System Name
+            draw.rectangle(
+                (0, 30, self.width, 70), fill=view_model.status_indicator_color
+            )
+            draw.text(
+                (10, 35), view_model.system_name, fill="black", font=self.font_large
+            )
 
-            # Push to ST7789 display
-            if self.st7789_available and (now_ts - self._last_tft_push) >= update_interval:
-                if self._update_st7789_display(system, freq, tgid, extra, settings):
-                    self._last_tft_push = now_ts
-                else:
-                    # Fallback to saving image file for debugging
-                    img.save(self.image_path)
-            else:
-                # No ST7789 display; save image file for debugging/development
-                img.save(self.image_path)
-                
+            # Department / Agency
+            draw.rectangle((0, 70, self.width, 110), fill=view_model.department_color)
+            draw.text(
+                (10, 75), view_model.department_text, fill="black", font=self.font_large
+            )
+
+            # Main content area
+            draw.text(
+                (10, 120),
+                view_model.talkgroup_line,
+                fill=self.colors["text"],
+                font=self.font_large,
+            )
+            draw.text(
+                (10, 155),
+                view_model.frequency_line,
+                fill=self.colors["text"],
+                font=self.font_med,
+            )
+            draw.text(
+                (10, 175),
+                view_model.system_info_line,
+                fill=self.colors["text"],
+                font=self.font_med,
+            )
+
+            # Status Bar
+            draw.rectangle(
+                (0, self.height - 30, self.width, self.height),
+                fill=self.colors["status"],
+            )
+            draw.text(
+                (10, self.height - 25),
+                view_model.status_bar_text,
+                fill="white",
+                font=self.font_med,
+            )
+
+            # Push to display
+            self.display.image(img)
         except Exception as e:
             logging.error(f"Error updating TFT display: {e}")
 
-    def update_oled(self, system, freq, tgid, extra=None, settings=None):
-        """Update OLED display with transmission information"""
-        if not self.oled_available or self.oled is None:
+    def show_message(self, title, message, duration=3):
+        if not self.is_available:
             return
-            
-        if extra is None:
-            extra = {}
-            
-        # Check OLED refresh rate throttling
-        now = time.time()
-        if settings:
-            oled_refresh_rate = settings.get('oled_refresh_rate', 20)
-            oled_interval = 1.0 / max(1, oled_refresh_rate)  # Prevent division by zero
-            
-            # Update scroll speed from settings
-            self.scroll_delay = settings.get('oled_scroll_speed', 0.2)
-            # Update volume poll interval to make volume number react faster when user turns encoder
-            try:
-                self._vol_poll_interval = float(settings.get('volume_poll_interval', 0.2))
-            except Exception:
-                self._vol_poll_interval = 0.2
-            # Update grace period during which UI hint overrides system value
-            try:
-                self._vol_hint_grace = float(settings.get('volume_hint_grace', 0.6))
-            except Exception:
-                self._vol_hint_grace = 0.6
-        else:
-            oled_interval = self._oled_min_interval
-            
-        # Throttle OLED updates based on refresh rate setting
-        if now - self._last_oled_update < oled_interval:
+        img = Image.new("RGB", (self.width, self.height), color="black")
+        draw = ImageDraw.Draw(img)
+        title_bbox = draw.textbbox((0, 0), title, font=self.font_large)
+        msg_bbox = draw.textbbox((0, 0), message, font=self.font_med)
+        draw.text(
+            ((self.width - title_bbox[2]) / 2, self.height / 2 - 30),
+            title,
+            font=self.font_large,
+            fill="orange",
+        )
+        draw.text(
+            ((self.width - msg_bbox[2]) / 2, self.height / 2),
+            message,
+            font=self.font_med,
+            fill="white",
+        )
+        self.display.image(img)
+
+    def clear(self):
+        if not self.is_available:
             return
-            
-        self._last_oled_update = now
-            
+        self.display.fill(0)
+
+    def _load_font(self, size):
+        paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        ]
+        for path in paths:
+            if os.path.exists(path):
+                return ImageFont.truetype(path, size)
+        return ImageFont.load_default()
+
+
+class OLEDDisplay(BaseDisplay):
+    """Driver for the SSD1306 I2C OLED display."""
+
+    def __init__(self):
+        super().__init__()
         try:
-            self.oled.fill(0)
-            
-            # Check if there's an active transmission with a radio ID
-            srcaddr = extra.get('srcaddr')
-            active_transmission = extra.get('active') and srcaddr is not None
-            encrypted = bool(extra.get('encrypted'))
-            
-            if active_transmission and tgid:
-                # ACTIVE TRANSMISSION - Show 3-line format
-                
-                # Line 1: Custom header
-                # Draw composed header: SID/VOL + lock icon + bars
-                self._draw_oled_header(extra, settings)
-                
-                # Line 2: TALKGROUP (get full description with scrolling)
-                if encrypted:
-                    talkgroup_text = "ENCRYPTED"
-                else:
-                    talkgroup_text = f"TG {tgid}"
-                    if self.talkgroup_manager:
-                        tg_info = self.talkgroup_manager.lookup(tgid)
-                        if tg_info:
-                            label = tg_info.get('name') or tg_info.get('description')
-                            if label:
-                                talkgroup_text = self._get_scrolling_text(label, 20)
-                            elif tg_info.get('department'):
-                                dept_text = f"{tg_info['department']} {tgid}"
-                                talkgroup_text = self._get_scrolling_text(dept_text, 20)
-                        
-                self.oled.text(talkgroup_text, 0, 10, 1)
-                
-                # Line 3: RADIO ID
-                if not encrypted:
-                    radio_text = f"RADIO {srcaddr}"
-                    self.oled.text(radio_text, 0, 20, 1)
-                
-                # Lines 4-6: Reserved for future dual SDR setup
-                # (Currently empty but available)
-                
+            i2c = busio.I2C(board.SCL, board.SDA)
+            self.display = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c)
+            self.is_available = True
+            self.clear()
+            logging.info("OLED display initialized successfully.")
+        except Exception as e:
+            logging.warning(f"OLED display not available: {e}")
+            self.is_available = False
+
+    def update(self, view_model: DisplayViewModel, force_redraw=False):
+        if not self.is_available or not self._should_update(0.1) and not force_redraw:
+            return
+
+        try:
+            self.display.fill(0)
+            # Line 1: Time and Signal
+            self.display.text(datetime.now().strftime("%H:%M:%S"), 0, 0, 1)
+            self._draw_progress_bar(88, 0, 40, 8, view_model.signal_quality)
+
+            if view_model.is_active_transmission:
+                # Line 2: Talkgroup Description (scrolling would go here)
+                tg_text = view_model.department_text[:21]  # Truncate for now
+                self.display.text(tg_text, 0, 12, 1)
+                # Line 3: Radio ID
+                self.display.text(view_model.radio_id_text[:21], 0, 24, 1)
             else:
-                # NO ACTIVE TRANSMISSION - Show scanning status
-                
-                # Line 1: Custom header
-                # Draw composed header: SID/VOL + lock icon + bars
-                self._draw_oled_header(extra, settings)
-                
-                # Line 2: Scanning status
-                self.oled.text("SCANNING...", 0, 10, 1)
-                
-                # Line 3: Connection status
-                if system != "Offline":
-                    if extra.get('last_activity'):
-                        status = f"IDLE {extra.get('last_activity')}s"
-                    else:
-                        status = "MONITORING"
-                else:
-                    status = "OFFLINE"
-                self.oled.text(status, 0, 20, 1)
-            
-            self.oled.show()
+                # Show scanning status
+                self.display.text("Scanning...", 0, 12, 1)
+                self.display.text(view_model.idle_status_text[:21], 0, 24, 1)
+
+            # Status line at bottom
+            self.display.text(view_model.status_bar_text[:21], 0, 54, 1)
+            self.display.show()
         except Exception as e:
             logging.error(f"Error updating OLED display: {e}")
 
-    def show_menu_on_oled(self, menu_items, selected_index):
-        """Display menu on OLED"""
-        if not self.oled_available or self.oled is None:
+    def show_message(self, title, message, duration=3):
+        if not self.is_available:
             return
-            
-        try:
-            self.oled.fill(0)
-            
-            # Show up to 6 menu items
-            start_idx = max(0, selected_index - 2)
-            end_idx = min(len(menu_items), start_idx + 6)
-            
-            for i, item_idx in enumerate(range(start_idx, end_idx)):
-                item = menu_items[item_idx]
-                prefix = "> " if item_idx == selected_index else "  "
-                text = f"{prefix}{item}"[:21]  # Truncate for display
-                self.oled.text(text, 0, i * 10, 1)
-                
-            self.oled.show()
-        except Exception as e:
-            logging.error(f"Error showing menu on OLED: {e}")
+        self.display.fill(0)
+        self.display.text(title[:21], 0, 10, 1)
+        self.display.text(message[:21], 0, 30, 1)
+        self.display.show()
 
     def clear(self):
-        """Clear both displays"""
-        try:
-            # Clear ST7789 display
-            if self.st7789_available and self.st7789_display is not None:
-                try:
-                    black_image = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
-                    self.st7789_display.display(black_image)
-                except Exception as e:
-                    logging.debug(f"Error clearing ST7789 display: {e}")
-            
-            # Clear OLED display
-            if self.oled_available and self.oled is not None:
-                self.oled.fill(0)
-                self.oled.show()
-        except Exception as e:
-            logging.error(f"Error clearing displays: {e}")
+        if not self.is_available:
+            return
+        self.display.fill(0)
+        self.display.show()
+
+    def _draw_progress_bar(self, x, y, w, h, frac):
+        self.display.rect(x, y, w, h, 1)
+        fill_w = max(0, min(w - 2, int((w - 2) * frac)))
+        if fill_w > 0:
+            self.display.fill_rect(x + 1, y + 1, fill_w, h - 2, 1)
+
+
+# =====================================================================================
+# 3. MAIN MANAGER CLASS (The "Orchestrator")
+#    This is the public-facing class that ties everything together.
+# =====================================================================================
+class DisplayManager:
+    """
+    Manages all display devices by orchestrating the ViewModel and Display Drivers.
+    """
+
+    def __init__(self, talkgroup_manager=None, settings=None, rotation=0):
+        # The ViewModel is the single source of truth for display data
+        self.view_model = DisplayViewModel(talkgroup_manager)
+
+        # A list to hold all available display driver instances
+        self.displays = []
+
+        # Initialize and add available displays
+        tft = TFTDisplay(rotation=rotation, settings=settings)
+        if tft.is_available:
+            self.displays.append(tft)
+
+        oled = OLEDDisplay()
+        if oled.is_available:
+            self.displays.append(oled)
+
+        if not self.displays:
+            logging.warning(
+                "No displays were initialized. DisplayManager will be inactive."
+            )
+
+    def update(self, system, freq, tgid, extra, settings):
+        """High-level update method."""
+        # 1. Update the ViewModel with the latest data.
+        self.view_model.update(system, freq, tgid, extra, settings)
+
+        # 2. Check if a redraw is needed to save CPU cycles.
+        force_update = extra.get("force_redraw", False)
+        if not self.view_model.has_changed() and not force_update:
+            return
+
+        # 3. Tell each available display to redraw itself from the ViewModel.
+        for display in self.displays:
+            try:
+                display.update(self.view_model, force_redraw=force_update)
+            except Exception as e:
+                logging.error(f"Failed to update display {type(display).__name__}: {e}")
+
+    def clear(self):
+        """Clears all available displays."""
+        for display in self.displays:
+            display.clear()
+
+    def show_message(self, title, message, duration=3):
+        """Shows a message on all available displays."""
+        for display in self.displays:
+            display.show_message(title, message, duration)
+        # Hold the message on screen
+        if duration > 0:
+            time.sleep(duration)
 
     def cleanup(self):
-        """Clean up display resources"""
-        try:
-            # Clean up ST7789 display
-            if self.st7789_available and self.st7789_display is not None:
-                try:
-                    # Clear display
-                    black_image = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
-                    self.st7789_display.display(black_image)
-                    self.st7789_display = None
-                    self.st7789_available = False
-                    logging.info("ST7789 display cleaned up successfully")
-                except Exception as e:
-                    logging.debug(f"Error cleaning up ST7789 display: {e}")
-                    
-        except Exception as e:
-            logging.error(f"Error in DisplayManager cleanup: {e}")
-    
-    def skip_tft_for(self, seconds: float):
-        """Temporarily skip TFT updates to keep UI responsive."""
-        try:
-            self._skip_tft_until = max(self._skip_tft_until, time.time() + max(0.0, float(seconds)))
-        except Exception:
-            pass
-            
-    def show_message(self, title, message, duration=3):
-        """Show a temporary message on both displays"""
-        # Note: duration parameter reserved for future use
-        try:
-            # ST7789 message
-            if self.st7789_available and self.st7789_display is not None:
-                try:
-                    # Create message image
-                    img = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
-                    draw = ImageDraw.Draw(img)
-                    
-                    # Title (centered, orange)
-                    title_bbox = draw.textbbox((0, 0), title, font=self.font_large)
-                    title_width = title_bbox[2] - title_bbox[0]
-                    title_x = (self.width - title_width) // 2
-                    draw.text((title_x, 100), title, fill=(255, 165, 0), font=self.font_large)
-                    
-                    # Message (centered, white)
-                    msg_bbox = draw.textbbox((0, 0), message, font=self.font_med)
-                    msg_width = msg_bbox[2] - msg_bbox[0]
-                    msg_x = (self.width - msg_width) // 2
-                    draw.text((msg_x, 140), message, fill=(255, 255, 255), font=self.font_med)
-                    
-                    # Display the message
-                    self.st7789_display.display(img)
-                    
-                except Exception as e:
-                    logging.debug(f"Error showing ST7789 message: {e}")
-            
-            # OLED message
-            if self.oled_available and self.oled is not None:
-                self.oled.fill(0)
-                self.oled.text(title[:21], 0, 10, 1)
-                self.oled.text(message[:21], 0, 30, 1)
-                self.oled.show()
-                
-        except Exception as e:
-            logging.error(f"Error showing message: {e}")
-
-    def set_volume_mode(self, active: bool):
-        """Enable/disable temporary volume adjustment mode (affects OLED header rendering)."""
-        try:
-            self._volume_mode_active = bool(active)
-            self.request_oled_refresh()
-        except Exception:
-            pass
+        """Clears all displays on shutdown."""
+        logging.info("Cleaning up displays.")
+        self.clear()
