@@ -70,7 +70,9 @@ class DisplayManager:
         self._last_user_volume_change_time = 0.0
         # ST7789 TFT throttling/settings
         self._last_tft_push = 0.0
-        self._tft_min_interval = 0.1  # default seconds between ST7789 updates
+        self._tft_min_interval = (
+            0.2  # default seconds between ST7789 updates (reduce flicker)
+        )
         # Skip TFT during rapid user interactions
         self._skip_tft_until = 0.0
         # Volume adjustment mode (UI hint)
@@ -126,9 +128,15 @@ class DisplayManager:
             self.oled = None
 
     def init_st7789(self, settings):
-        """Initialize ST7789 display. Prefer RGB driver (PIL-friendly) on Pi, fallback to displayio."""
-        # First, attempt RGB driver for direct PIL image pushing
-        if RGB_ST7789_AVAILABLE:
+        """Initialize ST7789 display.
+        Preference order can be controlled with settings['tft_driver'] in {'rgb','displayio'} (default 'rgb').
+        """
+        preferred_driver = (
+            str(settings.get("tft_driver", "rgb")).lower() if settings else "rgb"
+        )
+
+        # Try RGB driver if preferred
+        if preferred_driver == "rgb" and RGB_ST7789_AVAILABLE:
             try:
                 # Ensure displayio releases any prior displays
                 try:
@@ -175,38 +183,45 @@ class DisplayManager:
                 self.rgb_display_available = False
                 self.rgb_display = None
 
-        # Fallback to displayio driver
-        if not ST7789_AVAILABLE:
-            return
-        try:
-            displayio.release_displays()
-            spi = board.SPI()
+        # Fallback or explicit displayio driver
+        if preferred_driver in ("displayio", "rgb") and ST7789_AVAILABLE:
+            try:
+                displayio.release_displays()
+                spi = board.SPI()
 
-            cs_pin_name = settings.get('st7789_cs_pin', 'D5')
-            dc_pin_name = settings.get('st7789_dc_pin', 'D25')
-            rst_pin_name = settings.get('st7789_rst_pin', 'D27')
+                cs_pin_name = settings.get("st7789_cs_pin", "D5") if settings else "D5"
+                dc_pin_name = (
+                    settings.get("st7789_dc_pin", "D25") if settings else "D25"
+                )
+                rst_pin_name = (
+                    settings.get("st7789_rst_pin", "D27") if settings else "D27"
+                )
 
-            tft_cs = getattr(board, cs_pin_name, board.D5)
-            tft_dc = getattr(board, dc_pin_name, board.D25)
-            tft_rst = getattr(board, rst_pin_name, board.D27)
+                tft_cs = getattr(board, cs_pin_name, board.D5)
+                tft_dc = getattr(board, dc_pin_name, board.D25)
+                tft_rst = getattr(board, rst_pin_name, board.D27)
 
-            display_bus = FourWire(spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst)
-            self.st7789_display = adafruit_st7789.ST7789(
-                display_bus,
-                width=self.width,
-                height=self.height,
-                rotation=0,
-                rowstart=0,
-                colstart=0,
-            )
-            self.st7789_available = True
-            logging.info(
-                f"displayio ST7789 initialized ({self.width}x{self.height}) CS:{cs_pin_name} DC:{dc_pin_name} RST:{rst_pin_name}"
-            )
-        except Exception as e:
-            logging.warning(f"displayio ST7789 init failed: {e}")
-            self.st7789_available = False
-            self.st7789_display = None
+                display_bus = FourWire(
+                    spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst
+                )
+                self.st7789_display = adafruit_st7789.ST7789(
+                    display_bus,
+                    width=self.width,
+                    height=self.height,
+                    rotation=0,
+                    rowstart=0,
+                    colstart=0,
+                )
+                self.st7789_available = True
+                logging.info(
+                    f"displayio ST7789 initialized ({self.width}x{self.height}) CS:{cs_pin_name} DC:{dc_pin_name} RST:{rst_pin_name}"
+                )
+            except Exception as e:
+                logging.warning(f"displayio ST7789 init failed: {e}")
+                self.st7789_available = False
+                self.st7789_display = None
+        else:
+            logging.warning("No suitable ST7789 driver available")
 
     def _init_fast_display(self):
         """Initialize fast displayio elements for high-performance updates."""
@@ -665,49 +680,9 @@ class DisplayManager:
                     logging.error(f"RGB driver image push failed: {display_err}")
                     # fall through to displayio fallback
 
-            # Push composed PIL image via displayio by saving to BMP and
-            # displaying it as an OnDiskBitmap TileGrid. This refreshes the
-            # entire screen and avoids label rendering issues.
-            try:
-                bmp_path = "/tmp/scanner_tft.bmp"
-                img.save(bmp_path, format="BMP")
-
-                bmp_file = open(bmp_path, "rb")
-                odb = displayio.OnDiskBitmap(bmp_file)
-                tile = displayio.TileGrid(odb, pixel_shader=odb.pixel_shader)
-                group = displayio.Group()
-                group.append(tile)
-                self.st7789_display.root_group = group
-
-                # Keep references so the file stays open while displayed.
-                # Maintain a small ring buffer of recent frame files to avoid
-                # closing a file still being used by the background refresher.
-                try:
-                    if not hasattr(self, "_open_bmp_files"):
-                        self._open_bmp_files = []
-                    self._open_bmp_files.append(bmp_file)
-                    # Close oldest files to cap resource usage
-                    while len(self._open_bmp_files) > 4:
-                        try:
-                            old = self._open_bmp_files.pop(0)
-                            old.close()
-                        except Exception:
-                            break
-                except Exception:
-                    pass
-
-                # Hint a refresh in case auto-refresh is throttled
-                try:
-                    if hasattr(self.st7789_display, "refresh"):
-                        self.st7789_display.refresh()
-                except Exception:
-                    pass
-
-                logging.debug("ST7789 display update completed (OnDiskBitmap)")
-                return True
-            except Exception as display_err:
-                logging.error(f"Bitmap display failed: {display_err}")
-                return False
+            # If RGB not available, don't try BMP fallback here to avoid
+            # flicker and format mismatches. Let caller handle debug save.
+            return False
 
         except Exception as e:
             logging.error(f"Error updating ST7789 display: {e}")
@@ -1017,7 +992,11 @@ class DisplayManager:
 
             # Push to ST7789 display
             if self.st7789_available and (now_ts - self._last_tft_push) >= update_interval:
-                if self._update_st7789_display(system, freq, tgid, extra, settings):
+                # For RGB driver, push directly; for others, save debug image only
+                pushed = self._update_st7789_display(
+                    system, freq, tgid, extra, settings
+                )
+                if pushed:
                     self._last_tft_push = now_ts
                 else:
                     # Fallback to saving image file for debugging
