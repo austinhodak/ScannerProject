@@ -162,44 +162,73 @@ class DisplayManager:
             # Create main display group
             self._display_group = displayio.Group()
             
-            # Create color palette for fast drawing
-            palette = displayio.Palette(8)
-            palette[0] = 0x000000  # Black (background)
-            palette[1] = 0xFFFFFF  # White (text)
-            palette[2] = 0xFFA500  # Orange (headers)
-            palette[3] = 0xFFFF00  # Yellow (department)
-            palette[4] = 0x0064FF  # Blue (status)
-            palette[5] = 0xFF0000  # Red (high priority)
-            palette[6] = 0x00FF00  # Green (low priority)
-            palette[7] = 0x808080  # Gray (inactive)
+            # Create background bitmap with header bars
+            background_bitmap = displayio.Bitmap(self.width, self.height, 8)
+            background_palette = displayio.Palette(8)
+            background_palette[0] = 0x000000  # Black (background)
+            background_palette[1] = 0xFFA500  # Orange (headers)
+            background_palette[2] = 0xFFFF00  # Yellow (department)
+            background_palette[3] = 0x0064FF  # Blue (status)
+            background_palette[4] = 0xFF0000  # Red (high priority)
+            background_palette[5] = 0x00FF00  # Green (low priority)
+            background_palette[6] = 0x808080  # Gray (inactive)
+            background_palette[7] = 0xFFFFFF  # White
+            
+            # Fill background with black
+            for x in range(self.width):
+                for y in range(self.height):
+                    background_bitmap[x, y] = 0
+            
+            # Create header bar (orange) - top 30 pixels
+            for x in range(self.width):
+                for y in range(30):
+                    background_bitmap[x, y] = 1
+            
+            # Create system name bar (orange) - pixels 30-70
+            for x in range(self.width):
+                for y in range(30, 70):
+                    background_bitmap[x, y] = 1
+                    
+            # Create status bar (blue) - bottom 30 pixels
+            for x in range(self.width):
+                for y in range(self.height - 30, self.height):
+                    background_bitmap[x, y] = 3
+            
+            # Add background to display group
+            bg_tile_grid = displayio.TileGrid(background_bitmap, pixel_shader=background_palette)
+            self._display_group.append(bg_tile_grid)
+            
+            # Store references for dynamic color changes
+            self._background_bitmap = background_bitmap
+            self._background_palette = background_palette
             
             # Pre-create text labels for different display elements
             font = terminalio.FONT
             
             # Header elements
-            self._text_labels['timestamp'] = label.Label(font, text="", color=0xFFFFFF)
+            self._text_labels['timestamp'] = label.Label(font, text="", color=0x000000)
             self._text_labels['timestamp'].anchor_point = (1.0, 0.0)  # Top-right anchor
-            self._text_labels['timestamp'].anchored_position = (self.width - 5, 5)
+            self._text_labels['timestamp'].anchored_position = (self.width - 5, 8)
             
             self._text_labels['system'] = label.Label(font, text="", color=0x000000, scale=2)
             self._text_labels['system'].anchor_point = (0.0, 0.0)
-            self._text_labels['system'].anchored_position = (10, 45)
+            self._text_labels['system'].anchored_position = (10, 40)
             
             self._text_labels['department'] = label.Label(font, text="", color=0x000000, scale=2)
             self._text_labels['department'].anchor_point = (0.0, 0.0) 
-            self._text_labels['department'].anchored_position = (10, 85)
+            self._text_labels['department'].anchored_position = (10, 78)
             
             self._text_labels['talkgroup'] = label.Label(font, text="", color=0xFFFFFF)
             self._text_labels['talkgroup'].anchor_point = (0.0, 0.0)
-            self._text_labels['talkgroup'].anchored_position = (10, 120)
+            self._text_labels['talkgroup'].anchored_position = (10, 118)
             
             self._text_labels['frequency'] = label.Label(font, text="", color=0xFFFFFF)
             self._text_labels['frequency'].anchor_point = (0.0, 0.0)
-            self._text_labels['frequency'].anchored_position = (10, 140)
+            self._text_labels['frequency'].anchored_position = (10, 138)
             
             self._text_labels['system_info'] = label.Label(font, text="", color=0xFFFFFF)
             self._text_labels['system_info'].anchor_point = (0.0, 0.0)
-            self._text_labels['system_info'].anchored_position = (10, 160)
+            self._text_labels['system_info'].anchored_position = (10, 158)
             
             self._text_labels['status'] = label.Label(font, text="", color=0xFFFFFF)
             self._text_labels['status'].anchor_point = (0.0, 0.0)
@@ -447,136 +476,22 @@ class DisplayManager:
             pass
 
     def _update_st7789_display(self, system, freq, tgid, extra, settings):
-        """Update ST7789 display using fast displayio elements or PIL fallback."""
+        """Update ST7789 display using fast displayio text elements."""
         if not self.st7789_available or self.st7789_display is None:
             logging.debug(f"ST7789 not available: available={self.st7789_available}, display={self.st7789_display is not None}")
             return False
         
         logging.debug("Updating ST7789 display...")
         
-        # Try fast displayio approach first
+        # Use fast displayio approach
         if self._display_group and self._text_labels:
             try:
                 return self._update_fast_displayio(system, freq, tgid, extra, settings)
             except Exception as e:
-                logging.warning(f"Fast displayio update failed, falling back to PIL: {e}")
-        
-        # Fallback to PIL-based drawing
-        try:
-            from datetime import datetime
-            
-            # Create image
-            img = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))  # Black background
-            draw = ImageDraw.Draw(img)
-            
-            # Colors (RGB tuples)
-            colors = {
-                'orange': (255, 165, 0),
-                'yellow': (255, 255, 0), 
-                'blue': (0, 100, 255),
-                'white': (255, 255, 255),
-                'black': (0, 0, 0),
-                'red': (255, 0, 0),
-                'green': (0, 255, 0)
-            }
-            
-            # Header bar (orange)
-            draw.rectangle([0, 0, self.width, 30], fill=colors['orange'])
-            
-            # Timestamp (top right)
-            now_str = datetime.now().strftime("%H:%M:%S")
-            draw.text((self.width - 60, 8), now_str, fill=colors['black'], font=self.font_small)
-            
-            # Connection status indicator (top left)
-            status_color = colors['red'] if system == "Offline" else colors['green']
-            draw.rectangle([5, 5, 20, 25], fill=status_color)
-            
-            # System name bar
-            draw.rectangle([0, 30, self.width, 70], fill=colors['orange'])
-            system_text = system[:30] if system else "No System"
-            draw.text((10, 45), system_text, fill=colors['black'], font=self.font_med)
-            
-            # Department/Agency bar
-            department = "Scanning..."
-            dept_color = colors['yellow']
-            encrypted = bool(extra.get('encrypted'))
-            
-            if tgid and self.talkgroup_manager and not encrypted:
-                tg_info = self.talkgroup_manager.lookup(tgid)
-                if tg_info:
-                    department = tg_info['department']
-                    description = tg_info['description']
-                    if description:
-                        department = f"{department} - {description}"
-                    
-                    # Color code by priority
-                    priority = tg_info.get('priority', 'Medium')
-                    if priority == 'High':
-                        dept_color = colors['red']
-                    elif priority == 'Medium':
-                        dept_color = colors['orange']
-                    else:
-                        dept_color = colors['green']
-                else:
-                    department = f"TGID {tgid} - Unknown"
-            elif encrypted:
-                department = "Encrypted"
-                dept_color = colors['orange']
-            
-            draw.rectangle([0, 70, self.width, 110], fill=dept_color)
-            dept_text = department[:35] if len(department) > 35 else department
-            draw.text((10, 85), dept_text, fill=colors['black'], font=self.font_med)
-            
-            # Talkgroup info
-            if tgid:
-                if encrypted:
-                    tag = "Encrypted"
-                elif extra.get('active'):
-                    srcaddr = extra.get('srcaddr', 0)
-                    tag = f"TGID: {tgid} | SRC: {srcaddr}"
-                else:
-                    last_activity = extra.get('last_activity')
-                    if last_activity:
-                        tag = f"TGID: {tgid} (last: {last_activity}s)"
-                    else:
-                        tag = f"TGID: {tgid}"
-            else:
-                tag = "Scanning..."
-                
-            draw.text((10, 120), tag[:40], fill=colors['white'], font=self.font_small)
-            
-            # Frequency
-            freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
-            draw.text((10, 140), freq_text, fill=colors['white'], font=self.font_small)
-            
-            # System info
-            nac = extra.get('nac', '--')
-            wacn = extra.get('wacn', '--') 
-            sysid = extra.get('sysid', '--')
-            site_info = f"NAC:{nac} WACN:{wacn} SYS:{sysid}"
-            draw.text((10, 160), site_info[:40], fill=colors['white'], font=self.font_small)
-            
-            # Status bar at bottom
-            draw.rectangle([0, self.height - 30, self.width, self.height], fill=colors['blue'])
-            
-            volume = settings.get('volume_level', 0)
-            mute_status = "MUTE" if settings.get('mute') else f"VOL:{volume}"
-            rec_status = "REC" if settings.get('recording') else ""
-            status_text = f"{mute_status} | SQL:2"
-            if rec_status:
-                status_text += f" | {rec_status}"
-                
-            draw.text((10, self.height - 22), status_text[:35], fill=colors['white'], font=self.font_small)
-            
-            # Push to display (this is the fast part!)
-            logging.debug("Pushing image to ST7789 display...")
-            self.st7789_display.display(img)
-            logging.debug("ST7789 display update completed")
-                
-            return True
-            
-        except Exception as e:
-            logging.error(f"Error updating ST7789 display: {e}")
+                logging.error(f"Fast displayio update failed: {e}")
+                return False
+        else:
+            logging.error("Fast displayio elements not initialized")
             return False
     
     def _update_fast_displayio(self, system, freq, tgid, extra, settings):
@@ -591,8 +506,9 @@ class DisplayManager:
         system_text = system[:25] if system else "No System" 
         self._text_labels['system'].text = system_text
         
-        # Update department
+        # Update department and department bar color
         department = "Scanning..."
+        dept_color_idx = 2  # Default yellow
         encrypted = bool(extra.get('encrypted'))
         
         if tgid and self.talkgroup_manager and not encrypted:
@@ -602,10 +518,27 @@ class DisplayManager:
                 description = tg_info['description']
                 if description:
                     department = f"{department} - {description}"
+                
+                # Set department bar color based on priority
+                priority = tg_info.get('priority', 'Medium')
+                if priority == 'High':
+                    dept_color_idx = 4  # Red
+                elif priority == 'Medium':
+                    dept_color_idx = 1  # Orange
+                else:
+                    dept_color_idx = 5  # Green
             else:
                 department = f"TGID {tgid} - Unknown"
+                dept_color_idx = 2  # Yellow
         elif encrypted:
             department = "Encrypted"
+            dept_color_idx = 1  # Orange
+        
+        # Update department bar color (pixels 70-110)
+        if hasattr(self, '_background_bitmap'):
+            for x in range(self.width):
+                for y in range(70, 110):
+                    self._background_bitmap[x, y] = dept_color_idx
         
         dept_text = department[:25] if len(department) > 25 else department
         self._text_labels['department'].text = dept_text
