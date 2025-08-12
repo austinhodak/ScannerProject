@@ -911,7 +911,7 @@ class DisplayManager:
             (10, 90),
             freq_text,
             fill=white,
-            font=(self._font_regular_med or self.font_med),
+            font=self.font("DejaVuSansMono-Oblique.ttf", 16),
         )
         draw.text(
             (10, self.height - 10),
