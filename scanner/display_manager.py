@@ -180,40 +180,31 @@ class DisplayManager:
             self.oled = None
             logging.warning(f"OLED reinit failed, will retry in {backoff:.1f}s: {e}")
             return False
-
+    
     def init_st7789(self, settings):
         """Initialize ST7789 display.
-        Preference order can be controlled with settings['tft_driver'] in {'rgb','displayio'} (default 'rgb').
+        Preference order can be controlled with settings['tft_driver'] in {'rgb','displayio'} (default 'displayio').
         """
         preferred_driver = (
-            str(settings.get("tft_driver", "displayio")).lower()
-            if settings
-            else "displayio"
+            str(settings.get("tft_driver", "displayio")).lower() if settings else "displayio"
         )
 
-        # Try RGB driver if preferred
+        # Try RGB driver first if requested
         if preferred_driver == "rgb" and RGB_ST7789_AVAILABLE:
             try:
-                # Ensure displayio releases any prior displays
-                try:
-                    displayio.release_displays()
+        try:
+            displayio.release_displays()
                 except Exception:
                     pass
-
-                spi = board.SPI()
+            spi = board.SPI()
                 cs_pin_name = settings.get("st7789_cs_pin", "D5")
                 dc_pin_name = settings.get("st7789_dc_pin", "D25")
                 rst_pin_name = settings.get("st7789_rst_pin", "D27")
-
                 tft_cs = digitalio.DigitalInOut(getattr(board, cs_pin_name, board.D5))
                 tft_dc = digitalio.DigitalInOut(getattr(board, dc_pin_name, board.D25))
-                tft_rst = digitalio.DigitalInOut(
-                    getattr(board, rst_pin_name, board.D27)
-                )
-
+                tft_rst = digitalio.DigitalInOut(getattr(board, rst_pin_name, board.D27))
                 baudrate = int(settings.get("st7789_baudrate", 48_000_000))
-                rotation = int(settings.get("tft_rotation", 0))
-                # Update logical dimensions for rotation
+                rotation = int(settings.get("tft_rotation", 180))
                 if rotation in (0, 180):
                     self.width = self._panel_native_width
                     self.height = self._panel_native_height
@@ -221,7 +212,6 @@ class DisplayManager:
                     self.width = self._panel_native_height
                     self.height = self._panel_native_width
                 self.rotation = rotation
-
                 self.rgb_display = rgb_st7789.ST7789(
                     spi,
                     cs=tft_cs,
@@ -239,20 +229,17 @@ class DisplayManager:
                 logging.info(
                     f"RGB ST7789 initialized ({self.width}x{self.height}) CS:{cs_pin_name} DC:{dc_pin_name} RST:{rst_pin_name} baud:{baudrate} rot:{rotation}"
                 )
-            return
+                return
             except Exception as e:
-                logging.warning(
-                    f"RGB ST7789 init failed, falling back to displayio: {e}"
-                )
+                logging.warning(f"RGB ST7789 init failed, falling back to displayio: {e}")
                 self.rgb_display_available = False
                 self.rgb_display = None
 
-        # Fallback or explicit displayio driver
-        if preferred_driver in ("displayio", "rgb") and ST7789_AVAILABLE:
-        try:
-            displayio.release_displays()
-            spi = board.SPI()
-                # Match working example: configure SPI to 24MHz
+        # Fallback: displayio driver
+        if ST7789_AVAILABLE:
+            try:
+                displayio.release_displays()
+                spi = board.SPI()
                 try:
                     if spi.try_lock():
                         spi.configure(baudrate=24_000_000)
@@ -261,24 +248,14 @@ class DisplayManager:
                         spi.unlock()
                     except Exception:
                         pass
-
                 cs_pin_name = settings.get("st7789_cs_pin", "D5") if settings else "D5"
-                dc_pin_name = (
-                    settings.get("st7789_dc_pin", "D25") if settings else "D25"
-                )
-                rst_pin_name = (
-                    settings.get("st7789_rst_pin", "D27") if settings else "D27"
-                )
-
+                dc_pin_name = settings.get("st7789_dc_pin", "D25") if settings else "D25"
+                rst_pin_name = settings.get("st7789_rst_pin", "D27") if settings else "D27"
             tft_cs = getattr(board, cs_pin_name, board.D5)
             tft_dc = getattr(board, dc_pin_name, board.D25)
             tft_rst = getattr(board, rst_pin_name, board.D27)
-            
-                display_bus = FourWire(
-                    spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst
-                )
+            display_bus = FourWire(spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst)
                 rotation = int(settings.get("tft_rotation", 180)) if settings else 180
-                # Update logical dimensions for rotation
                 if rotation in (0, 180):
                     self.width = self._panel_native_width
                     self.height = self._panel_native_height
@@ -1132,7 +1109,7 @@ class DisplayManager:
                     self._tft_error_count = 0
             except Exception:
                 pass
-
+                
         except Exception as e:
             logging.error(f"Error updating TFT display: {e}")
 
