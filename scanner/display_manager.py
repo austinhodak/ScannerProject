@@ -523,12 +523,12 @@ class DisplayManager:
             # Create text labels (reuse these, just update text)
             # Top row: TIME VOL [LOCK] SIGNAL BAR
             self._st7789_text_labels["time"] = label.Label(
-                terminalio.FONT, text="--:--:--", color=0xFFFFFF, x=6, y=15
+                terminalio.FONT, text="--:--:--", color=0xFFFFFF, x=6, y=5
             )
             self._st7789_splash.append(self._st7789_text_labels['time'])
 
             self._st7789_text_labels["vol"] = label.Label(
-                terminalio.FONT, text="V00", color=0xFFFFFF, x=70, y=15
+                terminalio.FONT, text="V00", color=0xFFFFFF, x=70, y=5
             )
             self._st7789_splash.append(self._st7789_text_labels["vol"])
 
