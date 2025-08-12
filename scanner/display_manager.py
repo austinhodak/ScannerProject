@@ -846,7 +846,7 @@ class DisplayManager:
         white = (255, 255, 255)
         # Positions copied from displayio label setup
         draw.text(
-            (6, 10),
+            (6, 5),
             time_str,
             fill=white,
             font=(
@@ -854,7 +854,7 @@ class DisplayManager:
             ),
         )
         draw.text(
-            (70, 10),
+            (70, 5),
             vol_text,
             fill=white,
             font=(
@@ -863,7 +863,7 @@ class DisplayManager:
         )
 
         # Signal rectangle (outline + horizontal fill)
-        sig_w, sig_h = 40, 10
+        sig_w, sig_h = 40, 5
         sig_x, sig_y = self.width - sig_w - 6, 6
         draw.rectangle(
             (sig_x, sig_y, sig_x + sig_w - 1, sig_y + sig_h - 1), outline=white
