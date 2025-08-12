@@ -880,7 +880,7 @@ class DisplayManager:
         # Content texts
         # Talkgroup: use medium font to avoid oversized appearance
         draw.text(
-            (10, 45), tag, fill=white, font=(self._font_regular_med or self.font_med)
+            (10, 30), tag, fill=white, font=(self._font_condensed_tgid or self.font_med)
         )
         draw.text(
             (10, 50),
@@ -901,10 +901,10 @@ class DisplayManager:
             font=(self._font_regular_med or self.font_med),
         )
         draw.text(
-            (10, 110),
+            (10, self.height - 10)
             info_text,
             fill=white,
-            font=(self._font_regular_med or self.font_med),
+            font=(self._font_pixel_small or self.font_med),
         )
         # draw.text(
         #     (10, self.height - 15),
