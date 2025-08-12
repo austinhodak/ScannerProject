@@ -76,6 +76,11 @@ class DisplayManager:
         self._font_bold_med = self.font_med
         self._font_bold_large = self.font_large
         self._font_condensed_tgid = self.font_large
+        # Pixel-small font for crisp UI elements (time/vol)
+        try:
+            self._font_pixel_small = ImageFont.load_default()
+        except Exception:
+            self._font_pixel_small = self.font_small
 
         # Initialize scrolling state for OLED
         self.scroll_offset = 0
@@ -681,7 +686,14 @@ class DisplayManager:
                     department = tg_info['department']
                     description = tg_info['description']
                     if description:
-                        department = f"{department} - {description}"
+                        # Avoid leading "Unknown - " when department is missing or Unknown
+                        if (
+                            not department
+                            or str(department).strip().lower() == "unknown"
+                        ):
+                            department = f"{description}"
+                        else:
+                            department = f"{department} - {description}"
                 else:
                     department = f"TGID {tgid} - Unknown"
             elif encrypted:
@@ -689,19 +701,16 @@ class DisplayManager:
 
             self._st7789_text_labels['dept'].text = department[:30]
 
-            # Talkgroup info; if no TG active, show Scanning...
+            # Talkgroup info; if no active transmission, show Scanning...
             if tgid:
-                if encrypted:
-                    tag = "Encrypted"
-                elif extra.get('active'):
-                    srcaddr = extra.get('srcaddr', 0)
-                    tag = f"TGID: {tgid} | SRC: {srcaddr}"
-                else:
-                    last_activity = extra.get('last_activity')
-                    if last_activity:
-                        tag = f"TGID: {tgid} (last: {last_activity}s)"
+                if bool(extra.get("active")):
+                    if encrypted:
+                        tag = "Encrypted"
                     else:
-                        tag = f"TGID: {tgid}"
+                        srcaddr = extra.get("srcaddr", 0)
+                        tag = f"TGID: {tgid} | SRC: {srcaddr}"
+                else:
+                    tag = "Scanning..."
             else:
                 tag = "Scanning..."
 
@@ -797,7 +806,11 @@ class DisplayManager:
                 department = tg_info["department"]
                 description = tg_info["description"]
                 if description:
-                    department = f"{department} - {description}"
+                    # Avoid leading "Unknown - " when department is missing or Unknown
+                    if not department or str(department).strip().lower() == "unknown":
+                        department = f"{description}"
+                    else:
+                        department = f"{department} - {description}"
             else:
                 department = f"TGID {tgid} - Unknown"
         elif encrypted:
@@ -805,17 +818,14 @@ class DisplayManager:
         dept_text = department[:30]
 
         if tgid:
-            if encrypted:
-                tag = "Encrypted"
-            elif extra.get("active"):
-                srcaddr = extra.get("srcaddr", 0)
-                tag = f"TGID: {tgid} | SRC: {srcaddr}"
-            else:
-                last_activity = extra.get("last_activity")
-                if last_activity:
-                    tag = f"TGID: {tgid} (last: {last_activity}s)"
+            if bool(extra.get("active")):
+                if encrypted:
+                    tag = "Encrypted"
                 else:
-                    tag = f"TGID: {tgid}"
+                    srcaddr = extra.get("srcaddr", 0)
+                    tag = f"TGID: {tgid} | SRC: {srcaddr}"
+            else:
+                tag = "Scanning..."
         else:
             tag = "Scanning..."
         tag = tag[:35]
@@ -836,16 +846,20 @@ class DisplayManager:
         white = (255, 255, 255)
         # Positions copied from displayio label setup
         draw.text(
-            (6, 15),
+            (6, 10),
             time_str,
             fill=white,
-            font=(self._font_regular_small or self.font_small),
+            font=(
+                self._font_pixel_small or self._font_regular_small or self.font_small
+            ),
         )
         draw.text(
-            (70, 15),
+            (70, 10),
             vol_text,
             fill=white,
-            font=(self._font_regular_small or self.font_small),
+            font=(
+                self._font_pixel_small or self._font_regular_small or self.font_small
+            ),
         )
 
         # Signal rectangle (outline + horizontal fill)
@@ -861,14 +875,12 @@ class DisplayManager:
             )
 
         if locked:
-            self._draw_lock_icon_pil(draw, sig_x - 18, 5, color=white)
+            self._draw_lock_icon_pil(draw, sig_x - 18, 10, color=white)
 
         # Content texts
+        # Talkgroup: use medium font to avoid oversized appearance
         draw.text(
-            (10, 45),
-            tag,
-            fill=white,
-            font=(self._font_condensed_tgid or self.font_large),
+            (10, 45), tag, fill=white, font=(self._font_regular_med or self.font_med)
         )
         draw.text(
             (10, 70),
