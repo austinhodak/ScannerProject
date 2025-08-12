@@ -5,10 +5,17 @@ from datetime import datetime
 import time
 import subprocess
 import re
-import board
-import busio
-import adafruit_ssd1306
 import logging
+
+# Hardware-specific libraries are optional in dev environments
+try:
+    import board  # type: ignore
+    import busio  # type: ignore
+    import adafruit_ssd1306  # type: ignore
+except Exception:
+    board = None  # type: ignore
+    busio = None  # type: ignore
+    adafruit_ssd1306 = None  # type: ignore
 
 try:
     import displayio
@@ -284,74 +291,9 @@ class DisplayManager:
         else:
             logging.warning("No suitable ST7789 driver available")
 
-    def _init_fast_display(self):
-        """Initialize fast displayio elements for high-performance updates."""
-        logging.info(f"_init_fast_display called: st7789_available={self.st7789_available}, display={self.st7789_display is not None}")
-        if not self.st7789_available or self.st7789_display is None:
-            logging.warning("ST7789 not available for fast display init")
-            return
+    # Legacy _init_fast_display removed (unused)
 
-        try:
-            displayio.release_displays()
-            spi = board.SPI()
-
-            # Get pin assignments from settings with defaults
-            cs_pin_name = settings.get('st7789_cs_pin', 'CE0')
-            dc_pin_name = settings.get('st7789_dc_pin', 'D25')
-            rst_pin_name = settings.get('st7789_rst_pin', 'D24')
-
-            # Convert pin names to board objects
-            tft_cs = getattr(board, cs_pin_name, board.CE0)
-            tft_dc = getattr(board, dc_pin_name, board.D25)
-            tft_rst = getattr(board, rst_pin_name, board.D24)
-
-            display_bus = FourWire(spi, command=tft_dc, chip_select=tft_cs, reset=tft_rst)
-            self.st7789_display = adafruit_st7789.ST7789(
-                display_bus, 
-                width=self.width, 
-                height=self.height,
-                rotation=90,  # Use 90 degrees like your working example
-                rowstart=0,   # Reset to 0 like your working example
-                colstart=0
-            )
-            self.st7789_available = True
-            logging.info(f"ST7789 display initialized successfully ({self.width}x{self.height}) on pins CS:{cs_pin_name}, DC:{dc_pin_name}, RST:{rst_pin_name}")
-            logging.info(f"ST7789 config: rowstart=80, colstart=0, bgr=False, rotation={self.rotation // 90}")
-        except Exception as e:
-            logging.error(f"Could not initialize fast displayio elements: {e}")
-            import traceback
-            logging.error(f"Traceback: {traceback.format_exc()}")
-            # Fall back to PIL-based drawing
-            self._display_group = None
-            self._text_labels = {}
-
-    def _format_signal_bars(self, extra) -> str:
-        """Return signal bars like |||| using signal_quality in range [0, 1]."""
-        quality = extra.get('signal_quality', None)
-        if quality is None:
-            bars = 0
-        else:
-            try:
-                q = float(quality)
-            except Exception:
-                q = 0.0
-            # Clamp to [0,1]
-            if q < 0.0:
-                q = 0.0
-            elif q > 1.0:
-                q = 1.0
-            # Map to 0..4 bars with simple thresholds
-            if q >= 0.80:
-                bars = 4
-            elif q >= 0.60:
-                bars = 3
-            elif q >= 0.40:
-                bars = 2
-            elif q >= 0.20:
-                bars = 1
-            else:
-                bars = 0
-        return ("|" * bars).ljust(4, " ")
+    # Legacy _format_signal_bars removed (unused)
 
     def _get_system_volume_percent(self, fallback: int = 0) -> int:
         """Return current system output volume percent using PulseAudio or ALSA.
@@ -693,7 +635,7 @@ class DisplayManager:
                 vol_num = int(self._get_volume_percent(settings))
             except Exception:
                 vol_num = 0
-            self._st7789_text_labels["vol"].text = f"V{vol_num:02d}"
+            self._st7789_text_labels["vol"].text = f"VOL: {vol_num:02d}"
             # Signal bar fill and lock icon
             quality = 0.0
             try:
@@ -783,98 +725,20 @@ class DisplayManager:
             return False
 
     def _update_fast_displayio(self, system, freq, tgid, extra, settings):
-        """Update ST7789 display using fast displayio text elements."""
-        from datetime import datetime
-
-        # Update timestamp
-        now_str = datetime.now().strftime("%H:%M:%S")
-        self._text_labels['timestamp'].text = now_str
-
-        # Update system name
-        system_text = system[:25] if system else "No System" 
-        self._text_labels['system'].text = system_text
-
-        # Update department and department bar color
-        department = "Scanning..."
-        dept_color_idx = 2  # Default yellow
-        encrypted = bool(extra.get('encrypted'))
-
-        if tgid and self.talkgroup_manager and not encrypted:
-            tg_info = self.talkgroup_manager.lookup(tgid)
-            if tg_info:
-                department = tg_info['department']
-                description = tg_info['description']
-                if description:
-                    department = f"{department} - {description}"
-
-                # Set department bar color based on priority
-                priority = tg_info.get('priority', 'Medium')
-                if priority == 'High':
-                    dept_color_idx = 4  # Red
-                elif priority == 'Medium':
-                    dept_color_idx = 1  # Orange
-                else:
-                    dept_color_idx = 5  # Green
-            else:
-                department = f"TGID {tgid} - Unknown"
-                dept_color_idx = 2  # Yellow
-        elif encrypted:
-            department = "Encrypted"
-            dept_color_idx = 1  # Orange
-
-        # Update department bar color (pixels 70-110)
-        if hasattr(self, '_background_bitmap'):
-            for x in range(self.width):
-                for y in range(70, 110):
-                    self._background_bitmap[x, y] = dept_color_idx
-
-        dept_text = department[:25] if len(department) > 25 else department
-        self._text_labels['department'].text = dept_text
-
-        # Update talkgroup info
-        if tgid:
-            if encrypted:
-                tag = "Encrypted"
-            elif extra.get('active'):
-                srcaddr = extra.get('srcaddr', 0)
-                tag = f"TGID: {tgid} | SRC: {srcaddr}"
-            else:
-                last_activity = extra.get('last_activity')
-                if last_activity:
-                    tag = f"TGID: {tgid} (last: {last_activity}s)"
-                else:
-                    tag = f"TGID: {tgid}"
-        else:
-            tag = "Scanning..."
-
-        self._text_labels['talkgroup'].text = tag[:30]
-
-        # Update frequency
-        freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
-        self._text_labels['frequency'].text = freq_text
-
-        # Update system info
-        nac = extra.get('nac', '--')
-        wacn = extra.get('wacn', '--') 
-        sysid = extra.get('sysid', '--')
-        site_info = f"NAC:{nac} WACN:{wacn} SYS:{sysid}"
-        self._text_labels['system_info'].text = site_info[:30]
-
-        # Update status
-        volume = settings.get('volume_level', 0)
-        mute_status = "MUTE" if settings.get('mute') else f"VOL:{volume}"
-        rec_status = "REC" if settings.get('recording') else ""
-        status_text = f"{mute_status} | SQL:2"
-        if rec_status:
-            status_text += f" | {rec_status}"
-        self._text_labels['status'].text = status_text[:30]
-
-        return True
+        """Legacy fast displayio update removed (unused)."""
+        return False
 
     def set_rotation(self, angle):
         """Set display rotation angle (0, 90, 180, or 270 degrees)"""
         if angle in [0, 90, 180, 270]:
             self.rotation = angle
+            # Update logical dimensions to match rotation
+            if self.rotation in (0, 180):
+                self.width = self._panel_native_width
+                self.height = self._panel_native_height
+            else:
+                self.width = self._panel_native_height
+                self.height = self._panel_native_width
             logging.info(f"Display rotation set to {angle} degrees")
         else:
             logging.warning(f"Invalid rotation angle {angle}, must be 0, 90, 180, or 270")
@@ -1084,12 +948,28 @@ class DisplayManager:
             # Note: ST7789 rotation is handled in display initialization
             # PIL rotation is not needed as ST7789 driver handles this
 
-            # Push to ST7789 display
+            # Push to TFT display
+            pushed = False
             if self.st7789_available and (now_ts - self._last_tft_push) >= update_interval:
-                # For RGB driver, push directly; for others, save debug image only
-                pushed = self._update_st7789_display(
-                    system, freq, tgid, extra, settings
-                )
+                if (
+                    getattr(self, "rgb_display_available", False)
+                    and self.rgb_display is not None
+                ):
+                    # Pi-friendly RGB driver supports pushing PIL image directly
+                    try:
+                        try:
+                            self.rgb_display.image(img)
+                        except Exception:
+                            self.rgb_display.display(img)
+                        pushed = True
+                    except Exception as e:
+                        logging.debug(f"RGB ST7789 display push failed: {e}")
+                        pushed = False
+                else:
+                    # displayio driver path
+                    pushed = self._update_st7789_display(
+                        system, freq, tgid, extra, settings
+                    )
                 if pushed:
                     self._last_tft_push = now_ts
                 else:
@@ -1252,10 +1132,22 @@ class DisplayManager:
         """Clear both displays"""
         try:
             # Clear ST7789 display
-            if self.st7789_available and self.st7789_display is not None:
+            if self.st7789_available:
                 try:
                     black_image = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
-                    self.st7789_display.display(black_image)
+                    if (
+                        getattr(self, "rgb_display_available", False)
+                        and self.rgb_display is not None
+                    ):
+                        try:
+                            try:
+                                self.rgb_display.image(black_image)
+                            except Exception:
+                                self.rgb_display.display(black_image)
+                        except Exception:
+                            pass
+                    elif self.st7789_display is not None:
+                        self.st7789_display.display(black_image)
                 except Exception as e:
                     logging.debug(f"Error clearing ST7789 display: {e}")
 
@@ -1270,11 +1162,23 @@ class DisplayManager:
         """Clean up display resources"""
         try:
             # Clean up ST7789 display
-            if self.st7789_available and self.st7789_display is not None:
+            if self.st7789_available:
                 try:
-                    # Clear display
-                    black_image = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
-                    self.st7789_display.display(black_image)
+                    # Clear display if RGB driver present
+                    if (
+                        getattr(self, "rgb_display_available", False)
+                        and self.rgb_display is not None
+                    ):
+                        try:
+                            black_image = Image.new(
+                                "RGB", (self.width, self.height), color=(0, 0, 0)
+                            )
+                            try:
+                                self.rgb_display.image(black_image)
+                            except Exception:
+                                self.rgb_display.display(black_image)
+                        except Exception:
+                            pass
                     self.st7789_display = None
                     self.st7789_available = False
                     logging.info("ST7789 display cleaned up successfully")
@@ -1296,7 +1200,7 @@ class DisplayManager:
         # Note: duration parameter reserved for future use
         try:
             # ST7789 message
-            if self.st7789_available and self.st7789_display is not None:
+            if self.st7789_available:
                 try:
                     # Create message image
                     img = Image.new('RGB', (self.width, self.height), color=(0, 0, 0))
@@ -1314,11 +1218,28 @@ class DisplayManager:
                     msg_x = (self.width - msg_width) // 2
                     draw.text((msg_x, 140), message, fill=(255, 255, 255), font=self.font_med)
 
-                    # Display the message
-                    self.st7789_display.display(img)
+                    # Display the message on RGB driver if available; otherwise attempt displayio or save
+                    if (
+                        getattr(self, "rgb_display_available", False)
+                        and self.rgb_display is not None
+                    ):
+                        try:
+                            try:
+                                self.rgb_display.image(img)
+                            except Exception:
+                                self.rgb_display.display(img)
+                        except Exception:
+                            pass
+                    elif self.st7789_display is not None:
+                        try:
+                            self.st7789_display.display(img)
+                        except Exception:
+                            pass
+                    else:
+                        img.save(self.image_path)
 
                 except Exception as e:
-                    logging.debug(f"Error showing ST7789 message: {e}")
+                    logging.debug(f"Error preparing ST7789 message: {e}")
 
             # OLED message
             if self.oled_available and self.oled is not None:
