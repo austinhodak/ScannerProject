@@ -81,6 +81,19 @@ class DisplayManager:
             self._font_pixel_small = ImageFont.load_default()
         except Exception:
             self._font_pixel_small = self.font_small
+        # Font registry/cache to allow explicit font selection by name
+        self._font_cache = {}
+        self._font_search_dirs = [
+            "/usr/share/fonts/truetype/dejavu",
+            "/usr/share/fonts/truetype/liberation",
+            "/usr/share/fonts/truetype",
+            "/usr/share/fonts",
+        ]
+        try:
+            self._scan_available_fonts()
+        except Exception:
+            self._font_index = {}
+            self._font_available_names = []
 
         # Initialize scrolling state for OLED
         self.scroll_offset = 0
@@ -880,7 +893,7 @@ class DisplayManager:
         # Content texts
         # Talkgroup: use medium font to avoid oversized appearance
         draw.text(
-            (10, 30), tag, fill=white, font=(self._font_condensed_tgid or self.font_med)
+            (10, 30), tag, fill=white, font=self.font("DejaVuSansCondensed-Bold.ttf", 16)
         )
         draw.text(
             (10, 50),
@@ -966,6 +979,112 @@ class DisplayManager:
         except Exception:
             return None
 
+    def _resolve_font_path(self, name: str) -> str | None:
+        """Resolve a font name to a full path. Accepts names with or without .ttf.
+        Searches common system font directories (focus on DejaVu on Raspberry Pi).
+        Case-insensitive match is attempted if exact case fails.
+        """
+        if not name:
+            return None
+        # Absolute path provided
+        if os.path.isabs(name) and os.path.exists(name):
+            return name
+        # Use scanned index if available
+        try:
+            if hasattr(self, "_font_index"):
+                key = name if name.lower().endswith(".ttf") else f"{name}.ttf"
+                cand = self._font_index.get(key.lower())
+                if cand and os.path.exists(cand):
+                    return cand
+        except Exception:
+            pass
+        # Build candidate filenames (with and without extension)
+        base_with_ext = name if name.lower().endswith(".ttf") else f"{name}.ttf"
+        # Try direct joins
+        for dir_path in self._font_search_dirs:
+            try:
+                path = os.path.join(dir_path, base_with_ext)
+                if os.path.exists(path):
+                    return path
+            except Exception:
+                pass
+        # Case-insensitive search within directories
+        for dir_path in self._font_search_dirs:
+            try:
+                entries = os.listdir(dir_path)
+                target_lower = base_with_ext.lower()
+                for entry in entries:
+                    try:
+                        if entry.lower() == target_lower:
+                            return os.path.join(dir_path, entry)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        return None
+
+    def _scan_available_fonts(self):
+        index = {}
+        names = []
+        for dir_path in self._font_search_dirs:
+            try:
+                for entry in os.listdir(dir_path):
+                    try:
+                        if entry.lower().endswith(".ttf"):
+                            full = os.path.join(dir_path, entry)
+                            index[entry.lower()] = full
+                            names.append(os.path.splitext(entry)[0])
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        self._font_index = index
+        self._font_available_names = sorted(set(names))
+
+    def available_fonts(self):
+        try:
+            return list(self._font_available_names)
+        except Exception:
+            return []
+
+    def get_font_by_name(self, name: str, size: int):
+        """Return a truetype font by its filename or short name (e.g., 'DejaVuSans.ttf' or 'DejaVuSans-Bold').
+        Results are cached per (name,size). Falls back to default on failure.
+        """
+        try:
+            key = (str(name).strip().lower(), int(size))
+        except Exception:
+            key = (str(name).strip().lower(), 16)
+        try:
+            if key in self._font_cache:
+                return self._font_cache[key]
+            path = self._resolve_font_path(name)
+            if path and os.path.exists(path):
+                font = ImageFont.truetype(path, size)
+            else:
+                font = ImageFont.load_default()
+            self._font_cache[key] = font
+            return font
+        except Exception as e:
+            logging.debug(f"get_font_by_name failed for {name}@{size}: {e}")
+            try:
+                return ImageFont.load_default()
+            except Exception:
+                return self.font_med
+
+    def font(self, name: str | None, size: int | None, default=None):
+        """Convenience: get a cached font by name and size, with a default fallback.
+        Usage example at any draw.text call:
+            font=self.font("DejaVuSansCondensed-Bold", 18)
+        You can also pass the full filename with .ttf.
+        """
+        try:
+            if not name:
+                return default or self.font_med
+            return self.get_font_by_name(name, int(size) if size else 16) or default or self.font_med
+        except Exception:
+            return default or self.font_med
+
     def apply_font_settings(self, settings):
         """Load and cache regular, bold, and condensed fonts based on settings.
         Expected settings keys (optional):
@@ -981,7 +1100,7 @@ class DisplayManager:
             size_large = (
                 int(settings.get("tft_font_large_size", 24)) if settings else 24
             )
-            size_tgid = int(settings.get("tft_font_tgid_size", 28)) if settings else 28
+            size_tgid = int(settings.get("tft_font_tgid_size", 16)) if settings else 16
 
             # Optional explicit paths
             user_regular = (
@@ -1015,7 +1134,7 @@ class DisplayManager:
             ]
             condensed_candidates = [
                 user_cond,
-                "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf",
                 "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Regular.ttf",
                 "/System/Library/Fonts/Supplemental/Arial Narrow.ttf",
                 "/Library/Fonts/Arial Narrow.ttf",
