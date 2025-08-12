@@ -42,37 +42,42 @@ def signal_handler(sig, frame, cleanup_func):
 def main():
     """Main scanner application"""
     print("Starting Scanner System...")
-    
+
     try:
         # Initialize components
         settings = SettingsManager("settings.json")
         setup_logging(settings)
-        
+
         logging.info("Scanner system starting up...")
-        
+
         # Load talkgroup data
         talkgroup_mgr = TalkgroupManager("talkgroups.tsv")
-        
+
         # Initialize OP25 manager
         op25_manager = OP25Manager(settings)
-        
+
         # Initialize OP25 client with settings
         op25_host = settings.get("op25_host", "127.0.0.1")
         op25_port = settings.get("op25_port", 8080)
         system_name = settings.get("system_name", "SCANNER")
         prefer_op25 = settings.get("prefer_op25_system_name", False)
         op25 = OP25Client(host=op25_host, port=op25_port, system_name=system_name, prefer_op25_name=prefer_op25)
-        
+
         # Initialize display with talkgroup manager and rotation setting
         rotation = settings.get("display_rotation", 0)
         display = DisplayManager(talkgroup_manager=talkgroup_mgr, rotation=rotation)
-        
+
         # Initialize ST7789 display with configured pins
         display.init_st7789(settings)
-        
+        # Apply user font preferences (optional; falls back gracefully)
+        try:
+            display.apply_font_settings(settings)
+        except Exception:
+            pass
+
         # Initialize input manager
         input_mgr = InputManager()
-        
+
         # Initialize menu system with all dependencies
         menu = MenuSystem(
             display=display, 
@@ -82,7 +87,7 @@ def main():
             talkgroup_manager=talkgroup_mgr,
             op25_manager=op25_manager
         )
-        
+
         # Setup signal handlers for graceful shutdown
         def cleanup():
             logging.info("Cleaning up...")
@@ -90,23 +95,23 @@ def main():
                 # Stop OP25 client first (sets running=False)
                 logging.info("Stopping OP25 client...")
                 op25.stop()
-                
+
                 # Give threads a moment to see the stop flag
                 time.sleep(0.1)
-                
+
                 # Clean up OP25 manager (processes and threads)
                 logging.info("Cleaning up OP25 manager...")
                 op25_manager.cleanup()
-                
+
                 # Clean up input manager and GPIO
                 logging.info("Cleaning up input manager...")
                 input_mgr.cleanup()
-                
+
                 # Clean up display last
                 logging.info("Cleaning up display...")
                 display.cleanup()
                 display.clear()
-                
+
                 logging.info("Cleanup completed successfully")
             except Exception as e:
                 logging.error(f"Error during cleanup: {e}")
@@ -115,10 +120,10 @@ def main():
                     op25_manager.kill_all_op25_processes()
                 except:
                     pass
-            
+
         signal.signal(signal.SIGINT, lambda s, f: signal_handler(s, f, cleanup))
         signal.signal(signal.SIGTERM, lambda s, f: signal_handler(s, f, cleanup))
-        
+
         # At startup, sync settings volume_level from current system volume (source of truth)
         try:
             display.set_volume_hint(0)  # clear recent hint
@@ -131,13 +136,13 @@ def main():
         logging.info("Starting background threads...")
         op25_thread = threading.Thread(target=op25.run, daemon=True, name="OP25Client")
         input_thread = threading.Thread(target=input_mgr.run, daemon=True, name="InputManager")
-        
+
         op25_thread.start()
         input_thread.start()
-        
+
         logging.info("Scanner system ready")
         display.show_message("Scanner", "System Ready")
-        
+
         # Auto-start OP25 if configured
         if settings.get("op25_auto_start", False):
             logging.info("Auto-starting OP25...")
@@ -151,7 +156,7 @@ def main():
             time.sleep(2)
         else:
             time.sleep(2)
-        
+
         # Main application loop
         last_menu_check = 0
         menu_entry_hold_time = 1.0  # Hold push button for 1 second to enter menu
@@ -161,12 +166,12 @@ def main():
         volume_mode = False
         volume_mode_last_activity = 0.0
         volume_mode_timeout = 2.5  # seconds after last activity
-        
+
         while True:
             try:
                 # Read input
                 buttons = input_mgr.read_buttons()
-                
+
                 # Check for menu entry (hold push button) and volume mode toggle (short press)
                 if not menu.in_menu_mode():
                     if buttons.get("push"):
@@ -188,7 +193,7 @@ def main():
                                 display.set_volume_mode(volume_mode)
                                 logging.info(f"Volume mode {'enabled' if volume_mode else 'disabled'}")
                             push_start_time = None
-                
+
                 # Handle menu or scanner display
                 if menu.in_menu_mode():
                     menu.update(buttons)
@@ -239,11 +244,11 @@ def main():
                         volume_mode = False
                         display.set_volume_mode(False)
                         logging.info("Volume mode timed out")
-                    
+
                     # Update scanner display
                     system, freq, tgid, extra = op25.get_latest()
                     display.update(system, freq, tgid, extra, settings)
-                    
+
                     # Check for back button to enter menu (alternative method)
                     if buttons.get("back"):
                         current_time = time.time()
@@ -251,7 +256,7 @@ def main():
                             logging.info("Menu entry triggered by back button")
                             menu.enter_menu()
                             last_menu_check = current_time
-                
+
                 # Occasional GC to keep memory tidy during long runs
                 if int(time.time()) % 10 == 0:
                     try:
@@ -265,7 +270,7 @@ def main():
                 logging.error(f"Error in main loop: {e}")
                 display.show_message("Error", "System error occurred")
                 time.sleep(1)
-    
+
     except KeyboardInterrupt:
         logging.info("Keyboard interrupt received")
     except Exception as e:

@@ -37,7 +37,20 @@ class SettingsManager:
             "op25_auto_restart": True,
             "op25_auto_start": False,
             "system_name": "SCANNER",
-            "display_rotation": 0
+            "display_rotation": 0,
+            # TFT font customization (paths are optional; set to absolute .ttf path if desired)
+            # If paths are empty or invalid, sensible fallbacks are used automatically.
+            "tft_font_regular": "",
+            "tft_font_bold": "",
+            "tft_font_condensed": "",
+            # Base sizes used on the TFT (in pixels)
+            "tft_font_small_size": 12,
+            "tft_font_medium_size": 16,
+            "tft_font_large_size": 24,
+            # Dedicated size for talkgroup text (uses condensed font if available)
+            "tft_font_tgid_size": 28,
+            # Preferred ST7789 driver for TFT: 'displayio' (default) or 'rgb'
+            "tft_driver": "displayio",
         }
         self.load()
 
@@ -47,15 +60,15 @@ class SettingsManager:
             try:
                 with open(self.filepath, 'r') as f:
                     loaded_settings = json.load(f)
-                    
+
                 # Start with defaults and update with loaded values
                 self.settings = self.defaults.copy()
                 self.settings.update(loaded_settings)
-                
+
                 # Save back to ensure all defaults are present
                 if len(loaded_settings) != len(self.settings):
                     self.save()
-                    
+
             except (json.JSONDecodeError, IOError) as e:
                 logging.error(f"Error loading settings: {e}")
                 self.settings = self.defaults.copy()
@@ -72,7 +85,7 @@ class SettingsManager:
         """Set setting value and save immediately"""
         self.settings[key] = value
         self.save()
-        
+
     def update(self, updates):
         """Update multiple settings at once"""
         self.settings.update(updates)
@@ -85,17 +98,17 @@ class SettingsManager:
             dir_path = os.path.dirname(self.filepath)
             if dir_path:  # Only create directory if there is a directory path
                 os.makedirs(dir_path, exist_ok=True)
-            
+
             with open(self.filepath, 'w') as f:
                 json.dump(self.settings, f, indent=4)
         except IOError as e:
             logging.error(f"Error saving settings: {e}")
-            
+
     def reset_to_defaults(self):
         """Reset all settings to defaults"""
         self.settings = self.defaults.copy()
         self.save()
-        
+
     def get_all(self):
         """Get all settings as a dictionary"""
         return self.settings.copy()

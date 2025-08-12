@@ -63,10 +63,19 @@ class DisplayManager:
             self.width = self._panel_native_height
             self.height = self._panel_native_width
 
-        # Initialize fonts with fallbacks (only for TFT display)
+        # Initialize fonts with fallbacks (only for TFT display / PIL rendering)
+        # Defaults used until apply_font_settings() is called with user settings
         self.font_small = self._load_font(size=12)
         self.font_med = self._load_font(size=16)
         self.font_large = self._load_font(size=24)
+        # Optional style-specific fonts
+        self._font_regular_small = self.font_small
+        self._font_regular_med = self.font_med
+        self._font_regular_large = self.font_large
+        self._font_bold_small = self.font_small
+        self._font_bold_med = self.font_med
+        self._font_bold_large = self.font_large
+        self._font_condensed_tgid = self.font_large
 
         # Initialize scrolling state for OLED
         self.scroll_offset = 0
@@ -765,6 +774,108 @@ class DisplayManager:
         except:
             return None
 
+    def _load_font_from_candidates(self, candidates, size):
+        """Try to load a truetype font from a list of candidate paths."""
+        for path in candidates:
+            try:
+                if path and os.path.exists(path):
+                    return ImageFont.truetype(path, size)
+            except Exception as e:
+                logging.debug(f"Could not load font {path}: {e}")
+        # As last resort use default
+        try:
+            return ImageFont.load_default()
+        except Exception:
+            return None
+
+    def apply_font_settings(self, settings):
+        """Load and cache regular, bold, and condensed fonts based on settings.
+        Expected settings keys (optional):
+          - tft_font_regular, tft_font_bold, tft_font_condensed (absolute .ttf paths)
+          - tft_font_small_size, tft_font_medium_size, tft_font_large_size, tft_font_tgid_size
+        """
+        try:
+            # Sizes with sane defaults
+            size_small = (
+                int(settings.get("tft_font_small_size", 12)) if settings else 12
+            )
+            size_med = int(settings.get("tft_font_medium_size", 16)) if settings else 16
+            size_large = (
+                int(settings.get("tft_font_large_size", 24)) if settings else 24
+            )
+            size_tgid = int(settings.get("tft_font_tgid_size", 28)) if settings else 28
+
+            # Optional explicit paths
+            user_regular = (
+                (settings.get("tft_font_regular") or "").strip() if settings else ""
+            )
+            user_bold = (
+                (settings.get("tft_font_bold") or "").strip() if settings else ""
+            )
+            user_cond = (
+                (settings.get("tft_font_condensed") or "").strip() if settings else ""
+            )
+
+            # Default candidates per style (cross-platform best-effort)
+            regular_candidates = [
+                user_regular,
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/System/Library/Fonts/Arial.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+                "/Library/Fonts/Arial.ttf",
+                "/Windows/Fonts/arial.ttf",
+            ]
+            bold_candidates = [
+                user_bold,
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+                "/System/Library/Fonts/Arial Bold.ttf",
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                "/Library/Fonts/Arial Bold.ttf",
+                "/Windows/Fonts/arialbd.ttf",
+            ]
+            condensed_candidates = [
+                user_cond,
+                "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSansNarrow-Regular.ttf",
+                "/System/Library/Fonts/Supplemental/Arial Narrow.ttf",
+                "/Library/Fonts/Arial Narrow.ttf",
+                "/Windows/Fonts/arialn.ttf",
+            ]
+
+            # Load fonts
+            self._font_regular_small = self._load_font_from_candidates(
+                regular_candidates, size_small
+            )
+            self._font_regular_med = self._load_font_from_candidates(
+                regular_candidates, size_med
+            )
+            self._font_regular_large = self._load_font_from_candidates(
+                regular_candidates, size_large
+            )
+
+            self._font_bold_small = self._load_font_from_candidates(
+                bold_candidates, size_small
+            )
+            self._font_bold_med = self._load_font_from_candidates(
+                bold_candidates, size_med
+            )
+            self._font_bold_large = self._load_font_from_candidates(
+                bold_candidates, size_large
+            )
+
+            self._font_condensed_tgid = self._load_font_from_candidates(
+                condensed_candidates, size_tgid
+            )
+
+            # Maintain backward-compatible attributes
+            self.font_small = self._font_regular_small or self.font_small
+            self.font_med = self._font_regular_med or self.font_med
+            self.font_large = self._font_regular_large or self.font_large
+        except Exception as e:
+            logging.debug(f"apply_font_settings failed: {e}")
+
     def _get_scrolling_text(self, text, max_width=20):
         """Get scrolling text if text is longer than max_width"""
         import time
@@ -923,27 +1034,69 @@ class DisplayManager:
             # Header with timestamp
             draw.rectangle((0, 0, self.width, 30), fill=self.colors['background'])
             now_str = datetime.now().strftime("%b%d %H:%M:%S")
-            draw.text((self.width - 120, 5), now_str, fill=self.colors['text'], font=self.font_small)
+            draw.text(
+                (self.width - 120, 5),
+                now_str,
+                fill=self.colors["text"],
+                font=(self._font_regular_small or self.font_small),
+            )
             # Connection status indicator
             status_color = self.colors['high_priority'] if system == "Offline" else self.colors['medium_priority']
             draw.rectangle((10, 5, 20, 25), fill=status_color)
             # System name bar
             draw.rectangle((0, 30, self.width, 70), fill=self.colors['header'])
-            draw.text((10, 40), system_text, fill="black", font=self.font_large)
+            # Use bold for system header
+            draw.text(
+                (10, 40),
+                system_text,
+                fill="black",
+                font=(self._font_bold_large or self.font_large),
+            )
             # Department/Agency bar
             draw.rectangle((0, 70, self.width, 110), fill=dept_color)
-            draw.text((10, 80), dept_text, fill="black", font=self.font_large)
+            draw.text(
+                (10, 80),
+                dept_text,
+                fill="black",
+                font=(self._font_bold_large or self.font_large),
+            )
             # Talkgroup/Freq
-            draw.text((10, 120), tag, fill=self.colors['text'], font=self.font_large)
-            draw.text((10, 155), freq_text, fill=self.colors['text'], font=self.font_med)
+            # Use condensed, taller font for talkgroup if available
+            draw.text(
+                (10, 120),
+                tag,
+                fill=self.colors["text"],
+                font=(self._font_condensed_tgid or self.font_large),
+            )
+            draw.text(
+                (10, 155),
+                freq_text,
+                fill=self.colors["text"],
+                font=(self._font_regular_med or self.font_med),
+            )
             # System info
-            draw.text((10, 175), site_info, fill=self.colors['text'], font=self.font_med)
+            draw.text(
+                (10, 175),
+                site_info,
+                fill=self.colors["text"],
+                font=(self._font_regular_med or self.font_med),
+            )
             # Debug info
             if settings.get('show_debug'):
-                draw.text((10, 195), debug_info, fill=self.colors['text'], font=self.font_small)
+                draw.text(
+                    (10, 195),
+                    debug_info,
+                    fill=self.colors["text"],
+                    font=(self._font_regular_small or self.font_small),
+                )
             # Status bar
             draw.rectangle((0, self.height - 40, self.width, self.height), fill=self.colors['status'])
-            draw.text((10, self.height - 30), status_text, fill=self.colors['text'], font=self.font_med)
+            draw.text(
+                (10, self.height - 30),
+                status_text,
+                fill=self.colors["text"],
+                font=(self._font_bold_med or self.font_med),
+            )
 
             # Note: ST7789 rotation is handled in display initialization
             # PIL rotation is not needed as ST7789 driver handles this
@@ -1207,16 +1360,30 @@ class DisplayManager:
                     draw = ImageDraw.Draw(img)
 
                     # Title (centered, orange)
-                    title_bbox = draw.textbbox((0, 0), title, font=self.font_large)
+                    title_bbox = draw.textbbox(
+                        (0, 0), title, font=(self._font_bold_large or self.font_large)
+                    )
                     title_width = title_bbox[2] - title_bbox[0]
                     title_x = (self.width - title_width) // 2
-                    draw.text((title_x, 100), title, fill=(255, 165, 0), font=self.font_large)
+                    draw.text(
+                        (title_x, 100),
+                        title,
+                        fill=(255, 165, 0),
+                        font=(self._font_bold_large or self.font_large),
+                    )
 
                     # Message (centered, white)
-                    msg_bbox = draw.textbbox((0, 0), message, font=self.font_med)
+                    msg_bbox = draw.textbbox(
+                        (0, 0), message, font=(self._font_regular_med or self.font_med)
+                    )
                     msg_width = msg_bbox[2] - msg_bbox[0]
                     msg_x = (self.width - msg_width) // 2
-                    draw.text((msg_x, 140), message, fill=(255, 255, 255), font=self.font_med)
+                    draw.text(
+                        (msg_x, 140),
+                        message,
+                        fill=(255, 255, 255),
+                        font=(self._font_regular_med or self.font_med),
+                    )
 
                     # Display the message on RGB driver if available; otherwise attempt displayio or save
                     if (
