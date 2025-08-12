@@ -71,6 +71,8 @@ class DisplayManager:
         # OLED refresh rate control
         self._last_oled_update = 0.0
         self._oled_min_interval = 0.05  # default 20 Hz (1/20 = 0.05)
+        self._oled_error_count = 0
+        self._oled_disabled_until = 0.0
         # Volume cache (reduce shell calls)
         self._vol_cache = 0
         self._vol_last_time = 0.0
@@ -136,6 +138,48 @@ class DisplayManager:
             logging.warning(f"OLED display not available: {e}")
             self.oled_available = False
             self.oled = None
+
+        # Ensure OLED state attributes exist even if init failed
+        if not hasattr(self, "oled_available"):
+            self.oled_available = False
+        if not hasattr(self, "oled"):
+            self.oled = None
+
+    def _reinit_oled(self) -> bool:
+        """Attempt to re-initialize the OLED after an I/O error with backoff."""
+        try:
+            # Avoid hammering the bus if we're in backoff
+            now = time.time()
+            if now < getattr(self, "_oled_disabled_until", 0.0):
+                return False
+
+            # Try to recreate I2C and the display object
+            try:
+                i2c = busio.I2C(board.SCL, board.SDA, frequency=400_000)
+            except TypeError:
+                i2c = busio.I2C(board.SCL, board.SDA)
+            oled = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c)
+            oled.fill(0)
+            oled.show()
+            self.oled = oled
+            self.oled_available = True
+            # Reset error/backoff
+            self._oled_error_count = 0
+            self._oled_disabled_until = 0.0
+            logging.info("OLED reinitialized successfully after error")
+            return True
+        except Exception as e:
+            # Schedule next retry with exponential backoff
+            try:
+                self._oled_error_count = int(getattr(self, "_oled_error_count", 0)) + 1
+                backoff = min(60.0, float(2 ** min(self._oled_error_count, 6)))
+            except Exception:
+                backoff = 5.0
+            self._oled_disabled_until = time.time() + backoff
+            self.oled_available = False
+            self.oled = None
+            logging.warning(f"OLED reinit failed, will retry in {backoff:.1f}s: {e}")
+            return False
 
     def init_st7789(self, settings):
         """Initialize ST7789 display.
@@ -558,7 +602,10 @@ class DisplayManager:
             dept_bitmap = displayio.Bitmap(self.width, 40, 1)
             dept_palette = displayio.Palette(1)
             dept_palette[0] = 0xFFE0  # Yellow (default)
-            self._st7789_bars['dept'] = displayio.TileGrid(dept_bitmap, pixel_shader=dept_palette, x=0, y=70)
+            # Move department bar down to leave room for talkgroup immediately under header
+            self._st7789_bars["dept"] = displayio.TileGrid(
+                dept_bitmap, pixel_shader=dept_palette, x=0, y=90
+            )
             self._st7789_splash.append(self._st7789_bars['dept'])
 
             status_bitmap = displayio.Bitmap(self.width, 30, 1)
@@ -568,22 +615,80 @@ class DisplayManager:
             self._st7789_splash.append(self._st7789_bars['status'])
 
             # Create text labels (reuse these, just update text)
-            self._st7789_text_labels['time'] = label.Label(terminalio.FONT, text="--:--:--", color=0x0000, x=self.width-80, y=15)
+            # Top row: TIME VOL [LOCK] SIGNAL BARS
+            self._st7789_text_labels["time"] = label.Label(
+                terminalio.FONT, text="--:--:--", color=0x0000, x=6, y=15
+            )
             self._st7789_splash.append(self._st7789_text_labels['time'])
 
-            self._st7789_text_labels['system'] = label.Label(terminalio.FONT, text="System", color=0x0000, x=10, y=50)
+            self._st7789_text_labels["vol"] = label.Label(
+                terminalio.FONT, text="V00", color=0x0000, x=70, y=15
+            )
+            self._st7789_splash.append(self._st7789_text_labels["vol"])
+
+            # Signal bars (text form like ||||), positioned near right; will be updated each frame
+            self._st7789_text_labels["sig"] = label.Label(
+                terminalio.FONT, text="    ", color=0x0000, x=self.width - 30, y=15
+            )
+            self._st7789_splash.append(self._st7789_text_labels["sig"])
+
+            # Tiny lock icon as an 8x8 bitmap over the orange header
+            lock_bitmap = displayio.Bitmap(8, 8, 2)
+            lock_palette = displayio.Palette(2)
+            lock_palette[0] = 0xFD20  # orange background matches header
+            lock_palette[1] = 0x0000  # black pixels for the lock shape
+            # Fill background to orange (index 0)
+            for _y in range(8):
+                for _x in range(8):
+                    lock_bitmap[_x, _y] = 0
+            # Draw a simple 6x5 body at y 3..7 and a small shackle
+            # body outline (filled) 6x5 starting at (1,3)
+            for _y in range(3, 8):
+                for _x in range(1, 7):
+                    lock_bitmap[_x, _y] = 1
+            # carve out interior to make a border look
+            for _y in range(4, 7):
+                for _x in range(2, 6):
+                    lock_bitmap[_x, _y] = 0
+            # keyhole pixel
+            lock_bitmap[4, 5] = 1
+            # shackle
+            lock_bitmap[2, 2] = 1
+            lock_bitmap[5, 2] = 1
+            lock_bitmap[2, 1] = 1
+            lock_bitmap[5, 1] = 1
+            for _x in range(3, 5):
+                lock_bitmap[_x, 0] = 1
+            self._st7789_lock = displayio.TileGrid(
+                lock_bitmap, pixel_shader=lock_palette, x=-20, y=7
+            )
+            self._st7789_splash.append(self._st7789_lock)
+
+            # Move talkgroup up directly below header
+            self._st7789_text_labels["tgid"] = label.Label(
+                terminalio.FONT, text="TGID Info", color=0xFFFF, x=10, y=45
+            )
+            self._st7789_splash.append(self._st7789_text_labels["tgid"])
+
+            # Move system and dept labels down
+            self._st7789_text_labels["system"] = label.Label(
+                terminalio.FONT, text="System", color=0x0000, x=10, y=70
+            )
             self._st7789_splash.append(self._st7789_text_labels['system'])
 
-            self._st7789_text_labels['dept'] = label.Label(terminalio.FONT, text="Department", color=0x0000, x=10, y=90)
+            self._st7789_text_labels["dept"] = label.Label(
+                terminalio.FONT, text="Department", color=0x0000, x=10, y=100
+            )
             self._st7789_splash.append(self._st7789_text_labels['dept'])
 
-            self._st7789_text_labels['tgid'] = label.Label(terminalio.FONT, text="TGID Info", color=0xFFFF, x=10, y=130)
-            self._st7789_splash.append(self._st7789_text_labels['tgid'])
-
-            self._st7789_text_labels['freq'] = label.Label(terminalio.FONT, text="Frequency", color=0xFFFF, x=10, y=150)
+            self._st7789_text_labels["freq"] = label.Label(
+                terminalio.FONT, text="Frequency", color=0xFFFF, x=10, y=140
+            )
             self._st7789_splash.append(self._st7789_text_labels['freq'])
 
-            self._st7789_text_labels['info'] = label.Label(terminalio.FONT, text="System Info", color=0xFFFF, x=10, y=170)
+            self._st7789_text_labels["info"] = label.Label(
+                terminalio.FONT, text="System Info", color=0xFFFF, x=10, y=160
+            )
             self._st7789_splash.append(self._st7789_text_labels['info'])
 
             self._st7789_text_labels['status_text'] = label.Label(terminalio.FONT, text="Status", color=0xFFFF, x=10, y=self.height-15)
@@ -612,7 +717,37 @@ class DisplayManager:
             from datetime import datetime
 
             # Update text labels only (very fast)
+            # Top row updates: TIME VOL LOCK SIGNAL BARS
             self._st7789_text_labels['time'].text = datetime.now().strftime("%H:%M:%S")
+            # Volume (Vxx)
+            try:
+                vol_num = int(self._get_volume_percent(settings))
+            except Exception:
+                vol_num = 0
+            self._st7789_text_labels["vol"].text = f"V{vol_num:02d}"
+            # Signal bars and lock icon
+            quality = 0.0
+            try:
+                quality = float(extra.get("signal_quality", 0.0))
+            except Exception:
+                pass
+            bars = 0
+            if quality >= 0.80:
+                bars = 4
+            elif quality >= 0.60:
+                bars = 3
+            elif quality >= 0.40:
+                bars = 2
+            elif quality >= 0.20:
+                bars = 1
+            self._st7789_text_labels["sig"].text = ("|" * bars).ljust(4, " ")
+            # Lock icon visible only when locked; position just before bars
+            if extra.get("signal_locked"):
+                self._st7789_lock.x = self.width - 50
+                self._st7789_lock.y = 7
+            else:
+                # move off-screen
+                self._st7789_lock.x = -20
 
             system_text = system[:25] if system else "No System"
             self._st7789_text_labels['system'].text = system_text
@@ -635,7 +770,7 @@ class DisplayManager:
 
             self._st7789_text_labels['dept'].text = department[:30]
 
-            # Talkgroup info
+            # Talkgroup info; if no TG active, show Scanning...
             if tgid:
                 if encrypted:
                     tag = "Encrypted"
@@ -996,13 +1131,29 @@ class DisplayManager:
                 # No ST7789 display; save image file for debugging/development
                 img.save(self.image_path)
 
+            # If a lot of updates fail, temporarily slow down TFT to reduce bus contention
+            try:
+                self._tft_error_count = int(getattr(self, "_tft_error_count", 0))
+                if not pushed:
+                    self._tft_error_count += 1
+                else:
+                    self._tft_error_count = 0
+                if self._tft_error_count >= 5:
+                    self._skip_tft_until = time.time() + 1.0
+                    self._tft_error_count = 0
+            except Exception:
+                pass
+
         except Exception as e:
             logging.error(f"Error updating TFT display: {e}")
 
     def update_oled(self, system, freq, tgid, extra=None, settings=None):
         """Update OLED display with transmission information"""
         if not self.oled_available or self.oled is None:
-            return
+            # Try lazy reinit if previously failed and backoff elapsed
+            self._reinit_oled()
+            if not self.oled_available or self.oled is None:
+                return
 
         if extra is None:
             extra = {}
@@ -1095,13 +1246,20 @@ class DisplayManager:
                 self.oled.text(status, 0, 20, 1)
 
             self.oled.show()
+            # On success, reset error count
+            self._oled_error_count = 0
         except Exception as e:
             logging.error(f"Error updating OLED display: {e}")
+            # Attempt recovery on I/O errors
+            self._reinit_oled()
 
     def show_menu_on_oled(self, menu_items, selected_index):
         """Display menu on OLED"""
         if not self.oled_available or self.oled is None:
-            return
+            # Try lazy reinit if previously failed and backoff elapsed
+            self._reinit_oled()
+            if not self.oled_available or self.oled is None:
+                return
 
         try:
             self.oled.fill(0)
@@ -1117,8 +1275,10 @@ class DisplayManager:
                 self.oled.text(text, 0, i * 10, 1)
 
             self.oled.show()
+            self._oled_error_count = 0
         except Exception as e:
             logging.error(f"Error showing menu on OLED: {e}")
+            self._reinit_oled()
 
     def clear(self):
         """Clear both displays"""
