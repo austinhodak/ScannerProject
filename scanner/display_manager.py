@@ -737,6 +737,172 @@ class DisplayManager:
         """Legacy fast displayio update removed (unused)."""
         return False
 
+    def _draw_lock_icon_pil(
+        self, draw: ImageDraw.ImageDraw, x: int, y: int, color=(255, 255, 255)
+    ) -> None:
+        """Draw a small lock icon similar to the displayio bitmap at (x,y)."""
+        try:
+            # Body border (12x12 area)
+            for dx in range(2, 10):
+                draw.point((x + dx, y + 5), fill=color)
+                draw.point((x + dx, y + 10), fill=color)
+            for dy in range(6, 10):
+                draw.point((x + 2, y + dy), fill=color)
+                draw.point((x + 9, y + dy), fill=color)
+            # Keyhole
+            draw.point((x + 6, y + 8), fill=color)
+            # Shackle
+            for dx in range(3, 9):
+                draw.point((x + dx, y + 4), fill=color)
+            draw.point((x + 3, y + 3), fill=color)
+            draw.point((x + 8, y + 3), fill=color)
+            draw.point((x + 4, y + 2), fill=color)
+            draw.point((x + 7, y + 2), fill=color)
+        except Exception:
+            pass
+
+    def _render_rgb_layout_like_displayio(
+        self, system, freq, tgid, extra, settings
+    ) -> Image.Image:
+        """Render a PIL image that matches the displayio layout (white text on black, same positions)."""
+        img = Image.new("RGB", (self.width, self.height), color=(0, 0, 0))
+        draw = ImageDraw.Draw(img)
+
+        # Top row content
+        try:
+            time_str = datetime.now().strftime("%H:%M:%S")
+        except Exception:
+            time_str = "--:--:--"
+        try:
+            vol_num = int(self._get_volume_percent(settings))
+        except Exception:
+            vol_num = 0
+        vol_text = f"VOL: {vol_num:02d}"
+
+        # Signal/lock
+        try:
+            quality = float(extra.get("signal_quality", 0.0))
+        except Exception:
+            quality = 0.0
+        quality = max(0.0, min(1.0, quality))
+        locked = bool(extra.get("signal_locked"))
+
+        # Below header: texts similar to displayio
+        system_text = system[:25] if system else "No System"
+        department = "Scanning..."
+        encrypted = bool(extra.get("encrypted"))
+        if tgid and self.talkgroup_manager and not encrypted:
+            tg_info = self.talkgroup_manager.lookup(tgid)
+            if tg_info:
+                department = tg_info["department"]
+                description = tg_info["description"]
+                if description:
+                    department = f"{department} - {description}"
+            else:
+                department = f"TGID {tgid} - Unknown"
+        elif encrypted:
+            department = "Encrypted"
+        dept_text = department[:30]
+
+        if tgid:
+            if encrypted:
+                tag = "Encrypted"
+            elif extra.get("active"):
+                srcaddr = extra.get("srcaddr", 0)
+                tag = f"TGID: {tgid} | SRC: {srcaddr}"
+            else:
+                last_activity = extra.get("last_activity")
+                if last_activity:
+                    tag = f"TGID: {tgid} (last: {last_activity}s)"
+                else:
+                    tag = f"TGID: {tgid}"
+        else:
+            tag = "Scanning..."
+        tag = tag[:35]
+
+        freq_text = f"Freq: {freq:.4f} MHz" if freq else "Freq: --"
+        nac = extra.get("nac", "--")
+        wacn = extra.get("wacn", "--")
+        sysid = extra.get("sysid", "--")
+        info_text = f"NAC:{nac} WACN:{wacn} SYS:{sysid}"[:35]
+
+        volume = settings.get("volume_level", 0) if settings else 0
+        mute_status = "MUTE" if (settings and settings.get("mute")) else f"VOL:{volume}"
+        rec_status = "REC" if (settings and settings.get("recording")) else ""
+        status_text = f"{mute_status} | SQL:2"
+        if rec_status:
+            status_text += f" | {rec_status}"
+
+        white = (255, 255, 255)
+        # Positions copied from displayio label setup
+        draw.text(
+            (6, 15),
+            time_str,
+            fill=white,
+            font=(self._font_regular_small or self.font_small),
+        )
+        draw.text(
+            (70, 15),
+            vol_text,
+            fill=white,
+            font=(self._font_regular_small or self.font_small),
+        )
+
+        # Signal rectangle (outline + horizontal fill)
+        sig_w, sig_h = 40, 10
+        sig_x, sig_y = self.width - sig_w - 6, 6
+        draw.rectangle(
+            (sig_x, sig_y, sig_x + sig_w - 1, sig_y + sig_h - 1), outline=white
+        )
+        inner_w = max(0, min(sig_w - 2, int((sig_w - 2) * quality)))
+        if inner_w > 0 and sig_h > 2:
+            draw.rectangle(
+                (sig_x + 1, sig_y + 1, sig_x + inner_w, sig_y + sig_h - 2), fill=white
+            )
+
+        if locked:
+            self._draw_lock_icon_pil(draw, sig_x - 18, 5, color=white)
+
+        # Content texts
+        draw.text(
+            (10, 45),
+            tag,
+            fill=white,
+            font=(self._font_condensed_tgid or self.font_large),
+        )
+        draw.text(
+            (10, 70),
+            system_text,
+            fill=white,
+            font=(self._font_regular_med or self.font_med),
+        )
+        draw.text(
+            (10, 100),
+            dept_text,
+            fill=white,
+            font=(self._font_regular_med or self.font_med),
+        )
+        draw.text(
+            (10, 140),
+            freq_text,
+            fill=white,
+            font=(self._font_regular_med or self.font_med),
+        )
+        draw.text(
+            (10, 160),
+            info_text,
+            fill=white,
+            font=(self._font_regular_med or self.font_med),
+        )
+        draw.text(
+            (10, self.height - 15),
+            status_text[:30],
+            fill=white,
+            font=(self._font_regular_med or self.font_med),
+        )
+
+        return img
+
     def set_rotation(self, angle):
         """Set display rotation angle (0, 90, 180, or 270 degrees)"""
         if angle in [0, 90, 180, 270]:
@@ -1028,75 +1194,15 @@ class DisplayManager:
             self._last_tft_signature = signature
 
             # Proceed to draw only when content changed
-            img = Image.new('RGB', (self.width, self.height), color=self.colors['background'])
-            draw = ImageDraw.Draw(img)
-
-            # Header with timestamp
-            draw.rectangle((0, 0, self.width, 30), fill=self.colors['background'])
-            now_str = datetime.now().strftime("%b%d %H:%M:%S")
-            draw.text(
-                (self.width - 120, 5),
-                now_str,
-                fill=self.colors["text"],
-                font=(self._font_regular_small or self.font_small),
-            )
-            # Connection status indicator
-            status_color = self.colors['high_priority'] if system == "Offline" else self.colors['medium_priority']
-            draw.rectangle((10, 5, 20, 25), fill=status_color)
-            # System name bar
-            draw.rectangle((0, 30, self.width, 70), fill=self.colors['header'])
-            # Use bold for system header
-            draw.text(
-                (10, 40),
-                system_text,
-                fill="black",
-                font=(self._font_bold_large or self.font_large),
-            )
-            # Department/Agency bar
-            draw.rectangle((0, 70, self.width, 110), fill=dept_color)
-            draw.text(
-                (10, 80),
-                dept_text,
-                fill="black",
-                font=(self._font_bold_large or self.font_large),
-            )
-            # Talkgroup/Freq
-            # Use condensed, taller font for talkgroup if available
-            draw.text(
-                (10, 120),
-                tag,
-                fill=self.colors["text"],
-                font=(self._font_condensed_tgid or self.font_large),
-            )
-            draw.text(
-                (10, 155),
-                freq_text,
-                fill=self.colors["text"],
-                font=(self._font_regular_med or self.font_med),
-            )
-            # System info
-            draw.text(
-                (10, 175),
-                site_info,
-                fill=self.colors["text"],
-                font=(self._font_regular_med or self.font_med),
-            )
-            # Debug info
-            if settings.get('show_debug'):
-                draw.text(
-                    (10, 195),
-                    debug_info,
-                    fill=self.colors["text"],
-                    font=(self._font_regular_small or self.font_small),
+            # If RGB path is active, render a PIL image that mirrors the displayio layout
+            img = None
+            if (
+                getattr(self, "rgb_display_available", False)
+                and self.rgb_display is not None
+            ):
+                img = self._render_rgb_layout_like_displayio(
+                    system, freq, tgid, extra, settings
                 )
-            # Status bar
-            draw.rectangle((0, self.height - 40, self.width, self.height), fill=self.colors['status'])
-            draw.text(
-                (10, self.height - 30),
-                status_text,
-                fill=self.colors["text"],
-                font=(self._font_bold_med or self.font_med),
-            )
 
             # Note: ST7789 rotation is handled in display initialization
             # PIL rotation is not needed as ST7789 driver handles this
@@ -1108,13 +1214,16 @@ class DisplayManager:
                     getattr(self, "rgb_display_available", False)
                     and self.rgb_display is not None
                 ):
-                    # Pi-friendly RGB driver supports pushing PIL image directly
+                    # Pi-friendly RGB driver: push PIL image matching the displayio layout
                     try:
-                        try:
-                            self.rgb_display.image(img)
-                        except Exception:
-                            self.rgb_display.display(img)
-                        pushed = True
+                        if img is not None:
+                            try:
+                                self.rgb_display.image(img)
+                            except Exception:
+                                self.rgb_display.display(img)
+                            pushed = True
+                        else:
+                            pushed = False
                     except Exception as e:
                         logging.debug(f"RGB ST7789 display push failed: {e}")
                         pushed = False
