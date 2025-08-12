@@ -38,5 +38,13 @@
     "oled_scroll_speed": 0.2,
     "volume_poll_interval": 0.2,
     "volume_hint_grace": 0.6,
-    "i2c_frequency_khz": 400
+    "i2c_frequency_khz": 400,
+    "tft_driver": "rgb",
+    "tft_font_regular": "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "tft_font_bold": "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "tft_font_condensed": "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
+    "tft_font_small_size": 12,
+    "tft_font_medium_size": 16,
+    "tft_font_large_size": 24,
+    "tft_font_tgid_size": 32
 }
