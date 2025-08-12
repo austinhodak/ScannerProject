@@ -901,7 +901,7 @@ class DisplayManager:
             font=(self._font_regular_med or self.font_med),
         )
         draw.text(
-            (10, self.height - 10)
+            (10, self.height - 10),
             info_text,
             fill=white,
             font=(self._font_pixel_small or self.font_med),
