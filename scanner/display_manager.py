@@ -863,7 +863,7 @@ class DisplayManager:
         )
 
         # Signal rectangle (outline + horizontal fill)
-        sig_w, sig_h = 40, 5
+        sig_w, sig_h = 40, 10
         sig_x, sig_y = self.width - sig_w - 6, 6
         draw.rectangle(
             (sig_x, sig_y, sig_x + sig_w - 1, sig_y + sig_h - 1), outline=white
@@ -875,7 +875,7 @@ class DisplayManager:
             )
 
         if locked:
-            self._draw_lock_icon_pil(draw, sig_x - 18, 10, color=white)
+            self._draw_lock_icon_pil(draw, sig_x - 18, 5, color=white)
 
         # Content texts
         # Talkgroup: use medium font to avoid oversized appearance
@@ -883,35 +883,35 @@ class DisplayManager:
             (10, 45), tag, fill=white, font=(self._font_regular_med or self.font_med)
         )
         draw.text(
-            (10, 70),
+            (10, 50),
             system_text,
             fill=white,
             font=(self._font_regular_med or self.font_med),
         )
         draw.text(
-            (10, 100),
+            (10, 70),
             dept_text,
             fill=white,
             font=(self._font_regular_med or self.font_med),
         )
         draw.text(
-            (10, 140),
+            (10, 90),
             freq_text,
             fill=white,
             font=(self._font_regular_med or self.font_med),
         )
         draw.text(
-            (10, 160),
+            (10, 110),
             info_text,
             fill=white,
             font=(self._font_regular_med or self.font_med),
         )
-        draw.text(
-            (10, self.height - 15),
-            status_text[:30],
-            fill=white,
-            font=(self._font_regular_med or self.font_med),
-        )
+        # draw.text(
+        #     (10, self.height - 15),
+        #     status_text[:30],
+        #     fill=white,
+        #     font=(self._font_regular_med or self.font_med),
+        # )
 
         return img
 
