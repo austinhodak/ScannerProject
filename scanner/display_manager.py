@@ -582,87 +582,32 @@ class DisplayManager:
             from adafruit_display_text import label
             import terminalio
 
-            # Create main group once
+            # Create main group once (no backgrounds; text only)
             self._st7789_splash = displayio.Group()
-
-            # Create background bitmap (more efficient than Rect for large areas)
-            bg_bitmap = displayio.Bitmap(self.width, self.height, 1)
-            bg_palette = displayio.Palette(1)
-            bg_palette[0] = 0x0000  # Black
-            bg_sprite = displayio.TileGrid(bg_bitmap, pixel_shader=bg_palette, x=0, y=0)
-            self._st7789_splash.append(bg_sprite)
-
-            # Create colored bar bitmaps
-            header_bitmap = displayio.Bitmap(self.width, 30, 1)
-            header_palette = displayio.Palette(1)
-            header_palette[0] = 0xFD20  # Orange
-            self._st7789_bars['header'] = displayio.TileGrid(header_bitmap, pixel_shader=header_palette, x=0, y=0)
-            self._st7789_splash.append(self._st7789_bars['header'])
-
-            dept_bitmap = displayio.Bitmap(self.width, 40, 1)
-            dept_palette = displayio.Palette(1)
-            dept_palette[0] = 0xFFE0  # Yellow (default)
-            # Move department bar down to leave room for talkgroup immediately under header
-            self._st7789_bars["dept"] = displayio.TileGrid(
-                dept_bitmap, pixel_shader=dept_palette, x=0, y=90
-            )
-            self._st7789_splash.append(self._st7789_bars['dept'])
-
-            status_bitmap = displayio.Bitmap(self.width, 30, 1)
-            status_palette = displayio.Palette(1)
-            status_palette[0] = 0x001F  # Blue
-            self._st7789_bars['status'] = displayio.TileGrid(status_bitmap, pixel_shader=status_palette, x=0, y=self.height-30)
-            self._st7789_splash.append(self._st7789_bars['status'])
 
             # Create text labels (reuse these, just update text)
             # Top row: TIME VOL [LOCK] SIGNAL BARS
             self._st7789_text_labels["time"] = label.Label(
-                terminalio.FONT, text="--:--:--", color=0x0000, x=6, y=15
+                terminalio.FONT, text="--:--:--", color=0xFFFF, x=6, y=15
             )
             self._st7789_splash.append(self._st7789_text_labels['time'])
 
             self._st7789_text_labels["vol"] = label.Label(
-                terminalio.FONT, text="V00", color=0x0000, x=70, y=15
+                terminalio.FONT, text="V00", color=0xFFFF, x=70, y=15
             )
             self._st7789_splash.append(self._st7789_text_labels["vol"])
 
             # Signal bars (text form like ||||), positioned near right; will be updated each frame
             self._st7789_text_labels["sig"] = label.Label(
-                terminalio.FONT, text="    ", color=0x0000, x=self.width - 30, y=15
+                terminalio.FONT, text="    ", color=0xFFFF, x=self.width - 44, y=15
             )
             self._st7789_splash.append(self._st7789_text_labels["sig"])
 
-            # Tiny lock icon as an 8x8 bitmap over the orange header
-            lock_bitmap = displayio.Bitmap(8, 8, 2)
-            lock_palette = displayio.Palette(2)
-            lock_palette[0] = 0xFD20  # orange background matches header
-            lock_palette[1] = 0x0000  # black pixels for the lock shape
-            # Fill background to orange (index 0)
-            for _y in range(8):
-                for _x in range(8):
-                    lock_bitmap[_x, _y] = 0
-            # Draw a simple 6x5 body at y 3..7 and a small shackle
-            # body outline (filled) 6x5 starting at (1,3)
-            for _y in range(3, 8):
-                for _x in range(1, 7):
-                    lock_bitmap[_x, _y] = 1
-            # carve out interior to make a border look
-            for _y in range(4, 7):
-                for _x in range(2, 6):
-                    lock_bitmap[_x, _y] = 0
-            # keyhole pixel
-            lock_bitmap[4, 5] = 1
-            # shackle
-            lock_bitmap[2, 2] = 1
-            lock_bitmap[5, 2] = 1
-            lock_bitmap[2, 1] = 1
-            lock_bitmap[5, 1] = 1
-            for _x in range(3, 5):
-                lock_bitmap[_x, 0] = 1
-            self._st7789_lock = displayio.TileGrid(
-                lock_bitmap, pixel_shader=lock_palette, x=-20, y=7
+            # Lock indicator as text (no background)
+            self._st7789_text_labels["lock"] = label.Label(
+                terminalio.FONT, text="LOCK", color=0xFFFF, x=-100, y=15
             )
-            self._st7789_splash.append(self._st7789_lock)
+            self._st7789_splash.append(self._st7789_text_labels["lock"])
 
             # Move talkgroup up directly below header
             self._st7789_text_labels["tgid"] = label.Label(
@@ -672,12 +617,12 @@ class DisplayManager:
 
             # Move system and dept labels down
             self._st7789_text_labels["system"] = label.Label(
-                terminalio.FONT, text="System", color=0x0000, x=10, y=70
+                terminalio.FONT, text="System", color=0xFFFF, x=10, y=70
             )
             self._st7789_splash.append(self._st7789_text_labels['system'])
 
             self._st7789_text_labels["dept"] = label.Label(
-                terminalio.FONT, text="Department", color=0x0000, x=10, y=100
+                terminalio.FONT, text="Department", color=0xFFFF, x=10, y=100
             )
             self._st7789_splash.append(self._st7789_text_labels['dept'])
 
@@ -740,14 +685,18 @@ class DisplayManager:
                 bars = 2
             elif quality >= 0.20:
                 bars = 1
-            self._st7789_text_labels["sig"].text = ("|" * bars).ljust(4, " ")
+            # Use clearer blocks if font supports them; otherwise fall back to pipes
+            try:
+                blocks = ["    ", "▁   ", "▂▁  ", "▃▂▁ ", "▄▃▂▁"]
+                self._st7789_text_labels["sig"].text = blocks[bars]
+            except Exception:
+                self._st7789_text_labels["sig"].text = ("|" * bars).ljust(4, " ")
             # Lock icon visible only when locked; position just before bars
             if extra.get("signal_locked"):
-                self._st7789_lock.x = self.width - 50
-                self._st7789_lock.y = 7
+                self._st7789_text_labels["lock"].x = self.width - 80
             else:
                 # move off-screen
-                self._st7789_lock.x = -20
+                self._st7789_text_labels["lock"].x = -100
 
             system_text = system[:25] if system else "No System"
             self._st7789_text_labels['system'].text = system_text
