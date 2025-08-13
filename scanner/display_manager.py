@@ -943,189 +943,6 @@ class DisplayManager:
         else:
             logging.warning(f"Invalid rotation angle {angle}, must be 0, 90, 180, or 270")
 
-    def _render_sds100_layout(self, system, freq, tgid, extra, settings) -> Image.Image:
-        """Render a PIL image that mimics the Uniden SDS100 main screen layout.
-        Uses exact strings from the provided screenshot when fields are unavailable.
-
-        Colors are chosen to closely match the screenshot:
-          - Yellow/gold major lines
-          - Orange secondary lines
-          - Cyan frequency
-          - White misc/status
-        """
-        # Canvas
-        img = Image.new("RGB", (self.width, self.height), color=(0, 0, 0))
-        draw = ImageDraw.Draw(img)
-
-        # Colors (approximate to screenshot)
-        WHITE = (255, 255, 255)
-        GOLD = (255, 215, 0)
-        ORANGE = (255, 165, 0)
-        CYAN = (0, 200, 255)
-        GREY = (120, 120, 120)
-
-        # Fonts
-        f_small = self.font("DejaVuSans", 12, default=self.font_small)
-        f_small_bold = self.font("DejaVuSans-Bold", 12, default=self._font_bold_small or self.font_small)
-        f_med = self.font("DejaVuSans", 16, default=self._font_regular_med or self.font_med)
-        f_med_bold = self.font("DejaVuSans-Bold", 18, default=self._font_bold_med or self.font_med)
-        f_large = self.font("DejaVuSansCondensed-Bold", int(settings.get("tft_font_tgid_size", 28)) if settings else 28, default=self._font_condensed_tgid or self.font_large)
-
-        # Helper for right-aligned text
-        def draw_right(text: str, x_right: int, y: int, fill=WHITE, font=f_small):
-            try:
-                bbox = draw.textbbox((0, 0), text, font=font)
-                w = bbox[2] - bbox[0]
-            except Exception:
-                w = len(text) * 6
-            draw.text((x_right - w, y), text, fill=fill, font=font)
-
-        # Top three status rows
-        now_text = datetime.now().strftime("%b%d %H:%M")
-        # Row 1
-        top1_left = extra.get("top1_left", "F0:-1------")
-        draw.text((6, 5), top1_left, fill=WHITE, font=f_small_bold)
-        # Center 'DATA' like screenshot
-        data_text = extra.get("status_word", "DATA")
-        try:
-            db = draw.textbbox((0, 0), data_text, font=f_small_bold)
-            dw = db[2] - db[0]
-        except Exception:
-            dw = len(data_text) * 6
-        draw.text(((self.width - dw) // 2, 5), data_text, fill=WHITE, font=f_small_bold)
-        draw_right(extra.get("top1_right", now_text), self.width - 6, 5, WHITE, f_small_bold)
-        # Row 2
-        top2_left = extra.get("top2_left", "S0: !*3*")
-        top2_right = f"VOL: {int(self._get_volume_percent(settings)) if settings is not None else 0} SQL: 2"
-        draw.text((6, 17), top2_left, fill=WHITE, font=f_small)
-        draw_right(extra.get("top2_right", top2_right), self.width - 6, 17, WHITE, f_small)
-        # Row 3
-        top3_left = extra.get("top3_left", "D0:.1234567*-")
-        top3_right = extra.get("top3_right", "Tag: --  .001")
-        draw.text((6, 29), top3_left, fill=WHITE, font=f_small)
-        draw_right(top3_right, self.width - 6, 29, WHITE, f_small)
-
-        # Left stack of titles/subtitles (gold/orange)
-        # Values or fallbacks to screenshot text
-        line1 = system or extra.get("line1", "Next Gen")
-        line2 = extra.get("line2", "Erie County")
-        # Department and site lines
-        if self.talkgroup_manager and tgid and not bool(extra.get("encrypted")):
-            tg_info = self.talkgroup_manager.lookup(tgid)
-            if tg_info:
-                line3 = tg_info.get("department") or extra.get("line3", "City Fire")
-                line4 = extra.get("line4", tg_info.get("site") or "City Simulcast")
-                name_or_desc = tg_info.get("name") or tg_info.get("description")
-                line5 = name_or_desc or extra.get("line5", "DISPATCH")
-                line6 = extra.get("line6", tg_info.get("description") or "Fire Dispatch")
-            else:
-                line3 = extra.get("line3", "City Fire")
-                line4 = extra.get("line4", "City Simulcast")
-                line5 = extra.get("line5", "DISPATCH")
-                line6 = extra.get("line6", "Fire Dispatch")
-        else:
-            line3 = extra.get("line3", "City Fire")
-            line4 = extra.get("line4", "City Simulcast")
-            line5 = extra.get("line5", "DISPATCH")
-            line6 = extra.get("line6", "Fire Dispatch")
-
-        # Positions
-        y = 48
-        draw.text((10, y), str(line1), fill=GOLD, font=f_large)
-        y += 22
-        draw.text((10, y), str(line2), fill=ORANGE, font=f_med)
-        y += 26
-        draw.text((10, y), str(line3), fill=GOLD, font=f_large)
-        y += 22
-        draw.text((10, y), str(line4), fill=ORANGE, font=f_med)
-        y += 26
-        draw.text((10, y), str(line5), fill=GOLD, font=f_large)
-        y += 22
-        draw.text((10, y), str(line6), fill=ORANGE, font=f_med)
-        y += 18
-
-        # TGID line
-        if tgid:
-            tgid_text = f"TGID:{tgid}"
-        else:
-            tgid_text = extra.get("tgid_text", "TGID:101")
-        draw.text((10, y), tgid_text, fill=WHITE, font=f_small_bold)
-
-        # System info under TGID (left, white)
-        sys_id = extra.get("sys_id", extra.get("sysid", "19h"))
-        sys_line = f"Sys ID: {sys_id}"
-        trunk_line = extra.get("trunk_type", "P25 Trunk")
-        draw.text((10, y + 16), sys_line, fill=WHITE, font=f_small)
-        draw.text((10, y + 28), trunk_line, fill=WHITE, font=f_small)
-
-        # Right column: frequency, site, RSSI with bar, battery
-        if freq and isinstance(freq, (int, float)) and freq > 0:
-            freq_text = f"{freq:0.6f}MHz"
-        else:
-            freq_text = extra.get("freq_text", "460.125000MHz")
-        draw_right(freq_text, self.width - 8, 120, CYAN, f_med_bold)
-
-        site_id = extra.get("site_id", 1)
-        draw_right(f"Site ID: {site_id}", self.width - 8, 140, WHITE, f_small)
-
-        rssi = extra.get("rssi", "-82dBm")
-        draw_right(f"RSSI: {rssi}", self.width - 8, 156, WHITE, f_small)
-
-        # RSSI progress bar under the RSSI text
-        bar_w = 90
-        bar_h = 10
-        bar_x = self.width - bar_w - 8
-        bar_y = 172
-        draw.rectangle((bar_x, bar_y, bar_x + bar_w, bar_y + bar_h), outline=WHITE)
-        quality = extra.get("signal_quality")
-        try:
-            q = float(quality)
-        except Exception:
-            q = 0.65  # approximate from screenshot
-        q = max(0.0, min(1.0, q))
-        inner_w = int((bar_w - 2) * q)
-        if inner_w > 0:
-            draw.rectangle((bar_x + 1, bar_y + 1, bar_x + 1 + inner_w, bar_y + bar_h - 1), fill=WHITE)
-
-        # Battery text
-        batt = extra.get("battery", "3.79V")
-        draw.text((10, self.height - 60), f"Batt:{batt}", fill=WHITE, font=f_small)
-
-        # Mode row just above soft keys
-        mode_left = extra.get("mode_left", "NFM")
-        mode_right = extra.get("mode_right", "P")
-        draw.text((10, self.height - 46), mode_left, fill=WHITE, font=f_small_bold)
-        # Small boxed letter like the screenshot's P
-        box_w, box_h = 12, 12
-        box_x = 60
-        box_y = self.height - 49
-        draw.rectangle((box_x, box_y, box_x + box_w, box_y + box_h), outline=WHITE, fill=None)
-        draw.text((box_x + 3, box_y + 1), mode_right, fill=WHITE, font=f_small)
-
-        # Soft keys at the very bottom
-        keys = ["SYSTEM", "DEPT", "CHANNEL"]
-        key_count = len(keys)
-        padding = 4
-        key_height = 20
-        available_w = self.width - 2 * 6
-        key_w = (available_w - (key_count - 1) * 6) // key_count
-        base_y = self.height - key_height - 6
-        x = 6
-        for label_text in keys:
-            draw.rectangle((x, base_y, x + key_w, base_y + key_height), fill=GREY)
-            # Centered white text
-            try:
-                bbox = draw.textbbox((0, 0), label_text, font=f_small_bold)
-                t_w = bbox[2] - bbox[0]
-                t_h = bbox[3] - bbox[1]
-            except Exception:
-                t_w = len(label_text) * 6
-                t_h = 10
-            draw.text((x + (key_w - t_w) // 2, base_y + (key_height - t_h) // 2), label_text, fill=WHITE, font=f_small_bold)
-            x += key_w + 6
-
-        return img
-
     def _load_font(self, size=16):
         """Load font with fallbacks"""
         font_paths = [
@@ -1508,9 +1325,15 @@ class DisplayManager:
             self._last_tft_signature = signature
 
             # Proceed to draw only when content changed
-            # Always build a PIL image using the SDS100-style layout so we can
-            # also save it for debugging even when no physical display is present.
-            img = self._render_sds100_layout(system, freq, tgid, extra, settings)
+            # If RGB path is active, render a PIL image that mirrors the displayio layout
+            img = None
+            if (
+                getattr(self, "rgb_display_available", False)
+                and self.rgb_display is not None
+            ):
+                img = self._render_rgb_layout_like_displayio(
+                    system, freq, tgid, extra, settings
+                )
 
             # Note: ST7789 rotation is handled in display initialization
             # PIL rotation is not needed as ST7789 driver handles this
